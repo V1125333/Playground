@@ -1,0 +1,89 @@
+{
+  "users": {
+    "admin@jobyro.local": {
+      "name": "Super Admin",
+      "email": "admin@jobyro.local",
+      "role": "super_admin",
+      "password_hash": "rWBCqOfk/KCUvT2AU92a3y7+fZq/G0F5ob7369/RSuE=",
+      "salt": "8cb9bd2b85db770f08da74112aec78e7",
+      "totp_secret": "HBUP2HASNZCFFVQSFVHSJEGJN2Y4MTKA",
+      "totp_confirmed": false,
+      "failed_attempts": 0,
+      "locked": false,
+      "temp_password_hash": "",
+      "temp_password_salt": "",
+      "created_at": "2026-07-01T02:14:42.516684+00:00"
+    },
+    "user1782872082@example.com": {
+      "name": "Test User",
+      "email": "user1782872082@example.com",
+      "role": "user",
+      "password_hash": "rZYUvy9l86MWl0p7RlB9FEZMqWTV+v/aPrq+2ffv1TA=",
+      "salt": "3d694fc8fb0e036a658238363b008586",
+      "totp_secret": "QFHPRKTZO7QBVYZADDTOI5MXIBIKBJ6E",
+      "totp_confirmed": true,
+      "failed_attempts": 0,
+      "locked": false,
+      "temp_password_hash": "",
+      "temp_password_salt": "",
+      "created_at": "2026-07-01T02:14:42.623379+00:00"
+    },
+    "venumadhav.edu2021@gmail.com": {
+      "name": "Venu Madhav Pendurthi",
+      "email": "venumadhav.edu2021@gmail.com",
+      "role": "user",
+      "password_hash": "qAtXknjAIU2cuf1O55wIpj1PFj6+tikefEYOTo5PWkA=",
+      "salt": "fb2f319fbdd8a474b218f96052bd77e1",
+      "totp_secret": "GA6H7XVKMKOPKPTRVFT3BZYOF67TLXMO",
+      "totp_confirmed": true,
+      "failed_attempts": 0,
+      "locked": false,
+      "temp_password_hash": "",
+      "temp_password_salt": "",
+      "created_at": "2026-07-01T02:21:58.760679+00:00"
+    },
+    "jobyro.ui.1783650016@gmail.com": {
+      "name": "Venu Madhav Pendurthi",
+      "email": "jobyro.ui.1783650016@gmail.com",
+      "role": "user",
+      "password_hash": "f4OXZL33WS1JRDj8r1U98wqT4csauuLCa4oO1mRb5wc=",
+      "salt": "4f2b83ae2d5fffdd5316bf2a574ded27",
+      "totp_secret": "NG2HGKLZ7EN5ZI57OUFYDKGFF7CC2LPJ",
+      "totp_confirmed": true,
+      "failed_attempts": 0,
+      "locked": false,
+      "temp_password_hash": "",
+      "temp_password_salt": "",
+      "created_at": "2026-07-10T02:20:16.541966+00:00"
+    },
+    "jobyro.ui.1783650110@gmail.com": {
+      "name": "Venu Madhav Pendurthi",
+      "email": "jobyro.ui.1783650110@gmail.com",
+      "role": "user",
+      "password_hash": "mAxkHYjQ2KHNHStRCq1Fmdb50q1XLJWb74+GmU9JRfY=",
+      "salt": "27170f7671e182dbdd46b592964161ee",
+      "totp_secret": "PS62OO2ZKILHHVJWHR2B24ZP2XNLKXWL",
+      "totp_confirmed": true,
+      "failed_attempts": 0,
+      "locked": false,
+      "temp_password_hash": "",
+      "temp_password_salt": "",
+      "created_at": "2026-07-10T02:21:51.098024+00:00"
+    },
+    "jobyro.ui.1783650657@example.com": {
+      "name": "Venu Madhav Pendurthi",
+      "email": "jobyro.ui.1783650657@example.com",
+      "role": "user",
+      "password_hash": "v3IEPuXGrwkhPOib5qYr4quRW6sWN0X0baoTBez9avE=",
+      "salt": "b168751d31b7db22d706252816bdf931",
+      "totp_secret": "7L4L6URFV5IWGHAV4PGOZSODV4OBCMRN",
+      "totp_confirmed": true,
+      "failed_attempts": 0,
+      "locked": false,
+      "temp_password_hash": "",
+      "temp_password_salt": "",
+      "created_at": "2026-07-10T02:30:57.663189+00:00"
+    }
+  },
+  "temp_passwords": []
+}
