@@ -4,6 +4,8 @@ import {
   BarChart3,
   Check,
   ChevronRight,
+  ChevronsLeft,
+  ChevronsRight,
   ClipboardList,
   Download,
   Eye,
@@ -192,6 +194,7 @@ const PROFILE_STORAGE_KEY = "jobyro:candidate-profile";
 const PROFILE_ID_STORAGE_KEY = "jobyro:profile-id";
 const PROFILE_MIGRATED_KEY = "jobyro:profile-migrated-v1";
 const AUTH_TOKEN_KEY = "jobyro:auth-token";
+const SIDEBAR_COLLAPSED_KEY = "jobyro:sidebar-collapsed";
 
 function isInvalidSessionError(error: unknown) {
   return error instanceof Error && /invalid session|token expired|invalid token|missing bearer token/i.test(error.message);
@@ -297,6 +300,11 @@ function saveStoredResumes(resumes: ResumeRow[]) {
   window.localStorage.setItem(RESUME_HISTORY_STORAGE_KEY, JSON.stringify(resumes));
 }
 
+function loadSidebarCollapsed() {
+  if (typeof window === "undefined") return false;
+  return window.localStorage.getItem(SIDEBAR_COLLAPSED_KEY) === "true";
+}
+
 export default function App() {
   const navigate = useNavigate();
   const [resumes, setResumes] = useState<ResumeRow[]>(() => loadStoredResumes());
@@ -304,6 +312,7 @@ export default function App() {
   const [profileRecord, setProfileRecord] = useState<CandidateProfileRecord | null>(null);
   const [profileLoadError, setProfileLoadError] = useState("");
   const [authToken, setAuthToken] = useState(() => window.localStorage.getItem(AUTH_TOKEN_KEY) ?? "");
+  const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(() => loadSidebarCollapsed());
   const [authUser, setAuthUser] = useState<AuthUser | null>(() => {
     try {
       const raw = window.localStorage.getItem("jobyro:auth-user");
@@ -412,14 +421,22 @@ export default function App() {
     clearAuthSession();
   };
 
+  const toggleSidebar = () => {
+    setIsSidebarCollapsed((current) => {
+      const next = !current;
+      window.localStorage.setItem(SIDEBAR_COLLAPSED_KEY, String(next));
+      return next;
+    });
+  };
+
   if (!authToken || !authUser) {
     return <AuthPage onLogin={completeLogin} />;
   }
 
   return (
     <div className="min-h-screen bg-[#f5f6f8] text-[#020817]">
-      <Sidebar user={authUser} />
-      <div className="min-h-screen lg:pl-[240px]">
+      <Sidebar user={authUser} collapsed={isSidebarCollapsed} onToggle={toggleSidebar} />
+      <div className={cn("min-h-screen transition-[padding] duration-200", isSidebarCollapsed ? "lg:pl-[72px]" : "lg:pl-[240px]")}>
         <Topbar user={authUser} onLogout={logout} />
         <main>
           <Routes>
@@ -474,24 +491,45 @@ export default function App() {
   );
 }
 
-function Sidebar({ user }: { user: AuthUser }) {
+function Sidebar({ user, collapsed, onToggle }: { user: AuthUser; collapsed: boolean; onToggle: () => void }) {
   const initials = userInitials(user.name);
 
   return (
-    <aside className="fixed inset-y-0 left-0 z-30 hidden w-[240px] flex-col border-r border-slate-200 bg-white text-slate-950 lg:flex">
-      <div className="flex h-16 items-center gap-3 px-5">
-        <img src={jobyroIcon} alt="Jobyro" className="h-9 w-9 rounded-lg object-contain" />
-        <span className="text-lg font-semibold">Jobyro</span>
+    <aside
+      className={cn(
+        "fixed inset-y-0 left-0 z-30 hidden flex-col border-r border-slate-200 bg-white text-slate-950 transition-[width] duration-200 lg:flex",
+        collapsed ? "w-[72px]" : "w-[240px]",
+      )}
+    >
+      <div className={cn("flex h-16 items-center gap-3 px-5", collapsed ? "justify-center px-2" : "justify-between")}>
+        <div className={cn("flex items-center gap-3", collapsed && "flex-col gap-1")}>
+          <img src={jobyroIcon} alt="Jobyro" className="h-9 w-9 rounded-lg object-contain" />
+          {!collapsed && <span className="text-lg font-semibold">Jobyro</span>}
+        </div>
+        <button
+          type="button"
+          onClick={onToggle}
+          className={cn(
+            "grid h-9 place-items-center rounded-md border border-slate-200 bg-white text-slate-600 shadow-sm transition hover:bg-slate-50 hover:text-slate-950 focus:outline-none focus:ring-2 focus:ring-blue-500",
+            collapsed ? "h-7 w-9" : "w-12",
+          )}
+          aria-label={collapsed ? "Expand sidebar" : "Collapse sidebar"}
+          title={collapsed ? "Expand sidebar" : "Collapse sidebar"}
+        >
+          {collapsed ? <ChevronsRight size={18} /> : <ChevronsLeft size={18} />}
+        </button>
       </div>
 
-      <nav className="flex-1 space-y-1 px-3 pt-2">
+      <nav className={cn("flex-1 space-y-1 px-3 pt-2", collapsed && "px-2")}>
         {navigation.map((item) => (
           <NavLink
             key={item.to}
             to={item.to}
+            title={collapsed ? item.label : undefined}
             className={({ isActive }) =>
               cn(
                 "relative flex items-center gap-3 rounded-md px-3 py-2.5 text-sm font-semibold text-slate-600 transition hover:bg-slate-100 hover:text-slate-950 focus:outline-none focus:ring-2 focus:ring-blue-500",
+                collapsed && "justify-center px-0",
                 isActive && "bg-blue-50 text-blue-700",
               )
             }
@@ -500,7 +538,7 @@ function Sidebar({ user }: { user: AuthUser }) {
               <>
                 {isActive && <span className="absolute -left-3 h-6 w-1 rounded-r bg-blue-600" />}
                 <item.icon size={18} />
-                {item.label}
+                {!collapsed && item.label}
               </>
             )}
           </NavLink>
@@ -508,9 +546,11 @@ function Sidebar({ user }: { user: AuthUser }) {
         {user.role === "super_admin" && (
           <NavLink
             to="/ai-usage"
+            title={collapsed ? "AI Usage" : undefined}
             className={({ isActive }) =>
               cn(
                 "relative flex items-center gap-3 rounded-md px-3 py-2.5 text-sm font-semibold text-slate-600 transition hover:bg-slate-100 hover:text-slate-950",
+                collapsed && "justify-center px-0",
                 isActive && "bg-blue-50 text-blue-700",
               )
             }
@@ -519,7 +559,7 @@ function Sidebar({ user }: { user: AuthUser }) {
               <>
                 {isActive && <span className="absolute -left-3 h-6 w-1 rounded-r bg-blue-600" />}
                 <ClipboardList size={18} />
-                AI Usage
+                {!collapsed && "AI Usage"}
               </>
             )}
           </NavLink>
@@ -527,9 +567,11 @@ function Sidebar({ user }: { user: AuthUser }) {
         {user.role === "super_admin" && (
           <NavLink
             to="/admin/temp-passwords"
+            title={collapsed ? "Temp passwords" : undefined}
             className={({ isActive }) =>
               cn(
                 "relative flex items-center gap-3 rounded-md px-3 py-2.5 text-sm font-semibold text-slate-600 transition hover:bg-slate-100 hover:text-slate-950",
+                collapsed && "justify-center px-0",
                 isActive && "bg-blue-50 text-blue-700",
               )
             }
@@ -538,7 +580,7 @@ function Sidebar({ user }: { user: AuthUser }) {
               <>
                 {isActive && <span className="absolute -left-3 h-6 w-1 rounded-r bg-blue-600" />}
                 <Settings size={18} />
-                Temp passwords
+                {!collapsed && "Temp passwords"}
               </>
             )}
           </NavLink>
@@ -546,17 +588,21 @@ function Sidebar({ user }: { user: AuthUser }) {
         <div className="mx-1 mt-8 border-t border-slate-200" />
       </nav>
 
-      <div className="flex items-center gap-3 border-t border-slate-200 p-4">
+      <div className={cn("flex items-center gap-3 border-t border-slate-200 p-4", collapsed && "justify-center px-2")}>
         <div className="grid h-9 w-9 place-items-center rounded-full bg-blue-100 text-sm font-bold text-blue-700">
           {initials}
         </div>
-        <div className="min-w-0 flex-1">
-          <p className="truncate font-semibold">{user.name}</p>
-          <p className="text-sm text-slate-500">{user.role === "super_admin" ? "Super admin" : "User"}</p>
-        </div>
-        <button className="grid h-9 w-9 place-items-center rounded-md text-slate-500 hover:bg-slate-100" aria-label="Settings">
-          <Settings size={18} />
-        </button>
+        {!collapsed && (
+          <>
+            <div className="min-w-0 flex-1">
+              <p className="truncate font-semibold">{user.name}</p>
+              <p className="text-sm text-slate-500">{user.role === "super_admin" ? "Super admin" : "User"}</p>
+            </div>
+            <button className="grid h-9 w-9 place-items-center rounded-md text-slate-500 hover:bg-slate-100" aria-label="Settings">
+              <Settings size={18} />
+            </button>
+          </>
+        )}
       </div>
     </aside>
   );

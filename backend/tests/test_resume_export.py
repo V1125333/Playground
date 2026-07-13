@@ -237,6 +237,31 @@ def test_export_allows_stale_evidence_references_as_warnings() -> None:
     assert any("unknown evidence" in warning.lower() for warning in result.warnings)
 
 
+def test_export_allows_duplicate_bullets_as_warnings() -> None:
+    resume = structured_resume()
+    experience_section = resume.sections[2]
+    experience = deepcopy(experience_section.content[0])
+    duplicate_text = "Reviewed API and SQL changes with QA and architects to improve release readiness."
+    experience["bullets"] = [
+        {"generatedText": duplicate_text},
+        {"generatedText": duplicate_text},
+    ]
+    resume = resume.model_copy(
+        update={
+            "sections": [
+                *resume.sections[:2],
+                experience_section.model_copy(update={"content": [experience]}),
+                *resume.sections[3:],
+            ]
+        }
+    )
+
+    result = export_resume_record(record(resume), export_format=ExportFormat.docx)
+
+    assert result.content[:2] == b"PK"
+    assert any("duplicate generated bullet" in warning.lower() for warning in result.warnings)
+
+
 def test_pdf_preserves_section_and_bullet_order_and_hidden_sections() -> None:
     result = export_resume_record(record(structured_resume(hidden_skills=True)), export_format=ExportFormat.pdf)
     text = pdf_text(result.content)

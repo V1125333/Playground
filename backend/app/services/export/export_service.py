@@ -14,6 +14,7 @@ from app.services.resume_validator import validate_structured_resume
 
 
 EXPORT_RENDERER_VERSION = "resume-export-v1-structured"
+EXPORT_WARNING_ONLY_CODES = {"unknown_evidence_id", "duplicate_bullet"}
 
 
 class ExportFormat(StrEnum):
@@ -93,17 +94,17 @@ def validate_exportable_resume(record: StructuredResumeRecord) -> ResumeValidati
     profile_match = ProfileMatchSummary.model_validate(record.profile_match_json or {})
     evidence = collect_evidence(profile_match)
     validation = validate_structured_resume(record.resume_json, evidence, profile_match)
-    return allow_stale_evidence_references_for_export(validation)
+    return downgrade_export_quality_errors(validation)
 
 
-def allow_stale_evidence_references_for_export(validation: ResumeValidationResult) -> ResumeValidationResult:
-    stale_evidence_errors = [issue for issue in validation.errors if issue.code == "unknown_evidence_id"]
-    if not stale_evidence_errors:
+def downgrade_export_quality_errors(validation: ResumeValidationResult) -> ResumeValidationResult:
+    warning_only_errors = [issue for issue in validation.errors if issue.code in EXPORT_WARNING_ONLY_CODES]
+    if not warning_only_errors:
         return validation
-    blocking_errors = [issue for issue in validation.errors if issue.code != "unknown_evidence_id"]
+    blocking_errors = [issue for issue in validation.errors if issue.code not in EXPORT_WARNING_ONLY_CODES]
     warnings = [
         *validation.warnings,
-        *[issue.model_copy(update={"severity": "warning"}) for issue in stale_evidence_errors],
+        *[issue.model_copy(update={"severity": "warning"}) for issue in warning_only_errors],
     ]
     rejected_ids = {
         issue.content_id
