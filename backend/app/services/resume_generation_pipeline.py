@@ -195,6 +195,10 @@ def assemble_structured_resume(
     selected: SelectedResumeEvidence,
     summary_generation: SummaryGenerationResult | None = None,
     experience_intelligence: ExperienceIntelligencePlan | None = None,
+    rendered_skill_groups: list[dict] | None = None,
+    rendered_skill_supporting_evidence_ids: list[str] | None = None,
+    rendered_skill_supported_requirement_ids: list[str] | None = None,
+    rendered_skill_warnings: list[str] | None = None,
 ) -> StructuredGeneratedResume:
     sections: list[GeneratedResumeSection] = []
     section_visibility = effective_section_visibility(payload.resume_preferences)
@@ -210,7 +214,17 @@ def assemble_structured_resume(
             summary_generation = deterministic_summary(planner)
         sections.append(summary_section(summary_generation))
     if section_visibility.skills:
-        sections.append(skills_section(profile, context, selected))
+        if rendered_skill_groups is not None:
+            sections.append(
+                rendered_skills_section(
+                    rendered_skill_groups,
+                    rendered_skill_supporting_evidence_ids or [],
+                    rendered_skill_supported_requirement_ids or [],
+                    rendered_skill_warnings or [],
+                )
+            )
+        else:
+            sections.append(skills_section(profile, context, selected))
     if section_visibility.experience:
         sections.extend(experience_sections(profile, context, selected, experience_intelligence))
     if section_visibility.projects and context.generation_settings.include_projects and profile.projects:
@@ -347,6 +361,28 @@ def skills_section(profile: CandidateProfile, context: ResumeGenerationContext, 
             supportingEvidenceIds=[item.evidence_id for item in selected.skills],
             supportedRequirementIds=dedupe([rid for item in selected.skills for rid in item.requirement_ids]),
             generationMethod="deterministic",
+        ),
+    )
+
+
+def rendered_skills_section(
+    groups: list[dict],
+    supporting_evidence_ids: list[str],
+    supported_requirement_ids: list[str],
+    warnings: list[str],
+) -> GeneratedResumeSection:
+    return GeneratedResumeSection(
+        sectionId="section-skills",
+        type="skills",
+        title="TECHNICAL SKILLS",
+        order=2,
+        content=groups,
+        provenance=GeneratedContentProvenance(
+            supportingEvidenceIds=dedupe(supporting_evidence_ids),
+            supportedRequirementIds=dedupe(supported_requirement_ids),
+            generationMethod="skills_intelligence",
+            validationStatus="validated" if not warnings else "validated_with_warnings",
+            warnings=warnings,
         ),
     )
 

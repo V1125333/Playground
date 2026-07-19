@@ -23,7 +23,11 @@ from app.schemas.resume import (
 )
 from app.services.profile_matching import match_job_to_profile as actual_match_job_to_profile
 from app.services.profile_service import compute_profile_content_hash, ensure_profile_record_ids
-from app.services.resume_intelligence_store import STALE_PACKAGE_MESSAGE, ResumeIntelligencePackageStaleError
+from app.services.resume_intelligence_store import (
+    SKILLS_INTELLIGENCE_STALE_MESSAGE,
+    STALE_PACKAGE_MESSAGE,
+    ResumeIntelligencePackageStaleError,
+)
 from app.services.summary_generation_service import SUMMARY_PROMPT_VERSION
 from app.services.summary_intelligence import summary_model_configuration_hash
 from app.services.summary_planner import SummaryBuildResult, SummaryGenerationResult, SummaryValidationResult
@@ -480,6 +484,19 @@ def test_generate_route_reuses_valid_resume_intelligence_package(monkeypatch) ->
     experience_section = [section for section in captured["structured"].sections if section.type == "experience"][0]
     assert experience_section.content[0]["bullets"][0]["currentText"] == "Built C# REST API enhancements with SQL Server for enterprise application delivery."
     assert experience_section.content[0]["bullets"][0]["generationMethod"] == "openai"
+    skills_section = [section for section in captured["structured"].sections if section.type == "skills"][0]
+    assert skills_section.provenance.generation_method == "skills_intelligence"
+    assert skills_section.content == [
+        {
+            "category": "Languages",
+            "items": ["C#"],
+            "sourceSkillIds": ["skill-csharp"],
+            "supportingEvidenceIds": ["evidence-csharp"],
+            "supportedRequirementIds": ["req-csharp"],
+            "renderingPolicyVersion": "skills-rendering-v1",
+            "plannerVersion": SKILLS_PLANNER_VERSION,
+        }
+    ]
     match_spy.assert_not_called()
 
 
@@ -665,6 +682,127 @@ def test_generate_route_rejects_package_missing_summary_without_regeneration(mon
 
     assert response.status_code == 409, response.text
     assert response.json()["detail"] == "Summary intelligence is missing or stale. Run Analyze & Match again."
+
+
+def test_generate_route_rejects_package_missing_skills_without_regeneration(monkeypatch) -> None:
+    profile = candidate_profile()
+    record = profile_record(profile)
+    stored_analysis = job_analysis()
+    stored_match = actual_match_job_to_profile(
+        stored_analysis,
+        profile,
+        PROFILE_ID,
+        record.updated_at,
+        record.profile_version,
+        record.content_hash,
+    ).match_summary
+
+    async def fake_get_profile(_session, user_id, profile_id):
+        assert user_id == USER_ID
+        assert profile_id == PROFILE_ID
+        return record
+
+    async def fake_validate_package(_session, user_id, package_id, profile_record_arg, payload):
+        assert user_id == USER_ID
+        assert package_id == PACKAGE_ID
+        assert profile_record_arg is record
+        return SimpleNamespace(
+            id=UUID(PACKAGE_ID),
+            profile_id=UUID(PROFILE_ID),
+            profile_version=record.profile_version,
+            profile_content_hash=record.content_hash,
+            job_intelligence_json=stored_analysis.model_dump(mode="json", by_alias=True),
+            profile_match_json=stored_match.model_dump(mode="json", by_alias=True),
+            summary_intelligence_json=summary_intelligence_json(record),
+            experience_intelligence_json=experience_intelligence_json(),
+            skills_intelligence_json=None,
+        )
+
+    async def fail_persistence(*_args, **_kwargs):
+        raise AssertionError("missing skills intelligence must not persist a resume.")
+
+    monkeypatch.setattr(resumes_route.profile_service, "get_profile", fake_get_profile)
+    monkeypatch.setattr(resumes_route, "validate_resume_intelligence_package", fake_validate_package)
+    monkeypatch.setattr(
+        resumes_route,
+        "build_skills_intelligence",
+        Mock(side_effect=AssertionError("Generate must not rebuild missing package skills intelligence.")),
+    )
+    monkeypatch.setattr(resumes_route, "create_generated_resume", fail_persistence)
+    app.dependency_overrides[resumes_route.db_session] = fake_session
+    app.dependency_overrides[resumes_route.optional_current_user_id] = lambda: USER_ID
+
+    response = TestClient(app).post("/api/resumes/generate", json=generation_payload())
+
+    assert response.status_code == 409, response.text
+    assert response.json()["detail"] == SKILLS_INTELLIGENCE_STALE_MESSAGE
+
+
+def test_generate_route_rejects_tampered_skills_intelligence_without_legacy_fallback(monkeypatch) -> None:
+    profile = candidate_profile()
+    record = profile_record(profile)
+    stored_analysis = job_analysis()
+    stored_match = actual_match_job_to_profile(
+        stored_analysis,
+        profile,
+        PROFILE_ID,
+        record.updated_at,
+        record.profile_version,
+        record.content_hash,
+    ).match_summary
+    tampered_skills = skills_intelligence_json()
+    tampered_skill = tampered_skills["categories"][0]["skills"][0]
+    tampered_skill["canonicalName"] = "Java"
+    tampered_skill["displayName"] = "Java"
+    tampered_skill["normalizedValue"] = "java"
+    tampered_skill["supportingEvidenceIds"] = []
+    tampered_skill["supportedRequirementIds"] = ["req-java"]
+
+    async def fake_get_profile(_session, user_id, profile_id):
+        assert user_id == USER_ID
+        assert profile_id == PROFILE_ID
+        return record
+
+    async def fake_validate_package(_session, user_id, package_id, profile_record_arg, payload):
+        assert user_id == USER_ID
+        assert package_id == PACKAGE_ID
+        assert profile_record_arg is record
+        return SimpleNamespace(
+            id=UUID(PACKAGE_ID),
+            profile_id=UUID(PROFILE_ID),
+            profile_version=record.profile_version,
+            profile_content_hash=record.content_hash,
+            job_intelligence_json=stored_analysis.model_dump(mode="json", by_alias=True),
+            profile_match_json=stored_match.model_dump(mode="json", by_alias=True),
+            summary_intelligence_json=summary_intelligence_json(record),
+            experience_intelligence_json=experience_intelligence_json(),
+            skills_intelligence_json=tampered_skills,
+        )
+
+    async def fail_persistence(*_args, **_kwargs):
+        raise AssertionError("tampered skills intelligence must not persist a resume.")
+
+    monkeypatch.setattr(resumes_route.profile_service, "get_profile", fake_get_profile)
+    monkeypatch.setattr(resumes_route, "validate_resume_intelligence_package", fake_validate_package)
+    monkeypatch.setattr(
+        resumes_route,
+        "build_skills_intelligence",
+        Mock(side_effect=AssertionError("Generate must not rebuild tampered package skills intelligence.")),
+    )
+    monkeypatch.setattr(
+        resumes_route,
+        "grouped_resume_skills",
+        Mock(side_effect=AssertionError("Generate must not fall back to legacy skill grouping.")),
+        raising=False,
+    )
+    monkeypatch.setattr(resumes_route, "create_generated_resume", fail_persistence)
+    app.dependency_overrides[resumes_route.db_session] = fake_session
+    app.dependency_overrides[resumes_route.optional_current_user_id] = lambda: USER_ID
+
+    response = TestClient(app).post("/api/resumes/generate", json=generation_payload())
+
+    assert response.status_code == 409, response.text
+    assert response.json()["detail"] == SKILLS_INTELLIGENCE_STALE_MESSAGE
 
 
 def test_generate_route_rejects_changed_summary_model_config_without_regeneration(monkeypatch) -> None:

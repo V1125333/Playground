@@ -35,6 +35,7 @@ from app.services.experience_prompt_builder import build_experience_prompts
 from app.services.experience_generation_service import generate_experience_intelligence
 from app.services.skill_evidence_index import build_skill_evidence_index
 from app.services.skills_planner import build_skills_intelligence
+from app.services.skills_rendering import render_skills_intelligence
 from app.services import auth_store, profile_service
 from app.services.profile_service import ProfileNotFoundError, ProfileOwnershipError, user_id_from_email
 from app.services.resume_generation_pipeline import (
@@ -48,10 +49,12 @@ from app.services.resume_intelligence_store import (
     ResumeIntelligencePackageNotFoundError,
     ResumeIntelligencePackageOwnershipError,
     ResumeIntelligencePackageStaleError,
+    SKILLS_INTELLIGENCE_STALE_MESSAGE,
     create_resume_intelligence_package,
     package_record_to_job_analysis,
     package_record_to_experience_intelligence,
     package_record_to_profile_match,
+    package_record_to_skills_intelligence,
     validate_resume_intelligence_package,
 )
 from app.services.summary_intelligence import (
@@ -412,6 +415,10 @@ async def create_resume(
                     raise ResumeIntelligencePackageStaleError(SUMMARY_INTELLIGENCE_STALE_MESSAGE) from exc
                 summary_generation = summary_generation_from_intelligence(summary_intelligence)
                 experience_intelligence = package_record_to_experience_intelligence(package_record)
+                skills_intelligence = package_record_to_skills_intelligence(package_record)
+                rendered_skills = render_skills_intelligence(skills_intelligence)
+                if rendered_skills.validation.validation_status == "invalid":
+                    raise ResumeIntelligencePackageStaleError(SKILLS_INTELLIGENCE_STALE_MESSAGE)
                 context = build_generation_context_from_profile_match(
                     profile_record,
                     payload,
@@ -440,6 +447,7 @@ async def create_resume(
                 )
                 summary_generation = summary_build.generation
                 experience_intelligence = None
+                rendered_skills = None
             selected = select_relevant_profile_evidence(context)
             structured = assemble_structured_resume(
                 profile_record.profile_data,
@@ -448,6 +456,22 @@ async def create_resume(
                 selected,
                 summary_generation,
                 experience_intelligence,
+                rendered_skill_groups=(
+                    [group.model_dump(mode="json", by_alias=True) for group in rendered_skills.groups]
+                    if rendered_skills is not None
+                    else None
+                ),
+                rendered_skill_supporting_evidence_ids=(
+                    rendered_skills.supporting_evidence_ids if rendered_skills is not None else None
+                ),
+                rendered_skill_supported_requirement_ids=(
+                    rendered_skills.supported_requirement_ids if rendered_skills is not None else None
+                ),
+                rendered_skill_warnings=(
+                    [*rendered_skills.validation.warnings, *rendered_skills.validation.errors]
+                    if rendered_skills is not None
+                    else None
+                ),
             )
             validation = validate_structured_resume(structured, context.evidence_index, context.profile_match)
             if validation.errors:

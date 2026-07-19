@@ -26,6 +26,7 @@ from app.services.skills_planner import SkillsIntelligence, skills_intelligence_
 
 STALE_PACKAGE_MESSAGE = "Your profile or job description changed after analysis. Run Analyze & Match again."
 EXPERIENCE_INTELLIGENCE_STALE_MESSAGE = "Experience intelligence is missing or stale. Run Analyze & Match again."
+SKILLS_INTELLIGENCE_STALE_MESSAGE = "Skills intelligence is missing or stale. Run Analyze & Match again."
 logger = logging.getLogger(__name__)
 
 
@@ -132,6 +133,8 @@ async def validate_resume_intelligence_package(
                 "reasons": warnings,
             },
         )
+        if any(_is_skills_stale_reason(reason) for reason in warnings):
+            raise ResumeIntelligencePackageStaleError(SKILLS_INTELLIGENCE_STALE_MESSAGE)
         raise ResumeIntelligencePackageStaleError(STALE_PACKAGE_MESSAGE)
     if record.validation_status not in {"valid", "valid_with_warnings"}:
         logger.info(
@@ -295,6 +298,16 @@ def package_record_to_experience_intelligence(record) -> ExperienceIntelligenceP
     return ExperienceIntelligencePlan.model_validate(data)
 
 
+def package_record_to_skills_intelligence(record) -> SkillsIntelligence:
+    data = getattr(record, "skills_intelligence_json", None)
+    if not data:
+        raise ResumeIntelligencePackageStaleError(SKILLS_INTELLIGENCE_STALE_MESSAGE)
+    reasons = skills_intelligence_stale_reasons(data)
+    if reasons:
+        raise ResumeIntelligencePackageStaleError(SKILLS_INTELLIGENCE_STALE_MESSAGE)
+    return SkillsIntelligence.model_validate(data)
+
+
 def package_record_to_schema(record) -> ResumeIntelligencePackageSchema:
     return ResumeIntelligencePackageSchema(
         packageId=str(record.id),
@@ -323,3 +336,7 @@ def to_iso(value: datetime | None) -> str:
     if value.tzinfo is None:
         value = value.replace(tzinfo=timezone.utc)
     return value.isoformat()
+
+
+def _is_skills_stale_reason(reason: str) -> bool:
+    return "skill" in reason.casefold()

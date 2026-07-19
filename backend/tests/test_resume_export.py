@@ -191,6 +191,35 @@ def test_export_document_model_uses_structured_resume_header_visibility() -> Non
     assert [item.value for item in model.contact_items] == ["+12014436937", "https://github.com/venu"]
 
 
+def test_export_document_model_preserves_rendered_skill_groups_for_pdf_and_docx() -> None:
+    resume = structured_resume()
+    skills_section = next(item for item in resume.sections if item.type == "skills")
+    skills_section.content = [
+        {
+            "category": "Programming Languages",
+            "items": ["C#", "SQL/T-SQL"],
+            "sourceSkillIds": ["skill-csharp", "skill-sql"],
+            "renderingPolicyVersion": "skills-rendering-v1",
+        },
+        {
+            "category": "Backend Frameworks & Tools",
+            "items": ["ASP.NET Core", "REST APIs"],
+            "sourceSkillIds": ["skill-aspnet-core", "skill-rest-apis"],
+            "renderingPolicyVersion": "skills-rendering-v1",
+        },
+    ]
+
+    template = resolve_template("classic-ats")
+    pdf_model = build_document_model(resume, template=template, renderer_version=EXPORT_RENDERER_VERSION)
+    docx_model = build_document_model(resume, template=template, renderer_version=EXPORT_RENDERER_VERSION)
+
+    assert pdf_model.sections[1].content == docx_model.sections[1].content
+    assert [(group.category, group.items) for group in pdf_model.sections[1].content] == [
+        ("Programming Languages", ["C#", "SQL/T-SQL"]),
+        ("Backend Frameworks & Tools", ["ASP.NET Core", "REST APIs"]),
+    ]
+
+
 def pdf_text(content: bytes) -> str:
     return "\n".join(page.extract_text() or "" for page in PdfReader(BytesIO(content)).pages)
 

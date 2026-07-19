@@ -1519,6 +1519,232 @@ class ResumeIntelligencePackageSchema(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
 
 
+class InspectorWarning(BaseModel):
+    code: str
+    message: str = ""
+
+
+class EvidenceInspection(BaseModel):
+    evidence_id: str = Field(alias="evidenceId")
+    source_type: str = Field(default="", alias="sourceType")
+    source_id: str = Field(default="", alias="sourceId")
+    experience_id: str = Field(default="", alias="experienceId")
+    project_id: str = Field(default="", alias="projectId")
+    certification_id: str = Field(default="", alias="certificationId")
+    source_label: str = Field(default="", alias="sourceLabel")
+    evidence_text: str = Field(default="", alias="evidenceText")
+    canonical_skill: str = Field(default="", alias="canonicalSkill")
+    strength: str = ""
+    recency: str = ""
+    explicit: bool = False
+    linked_experience_ids: list[str] = Field(default_factory=list, alias="linkedExperienceIds")
+    warnings: list[InspectorWarning] = Field(default_factory=list)
+
+    model_config = ConfigDict(populate_by_name=True)
+
+
+class RequirementInspection(BaseModel):
+    requirement_id: str = Field(alias="requirementId")
+    original_text: str = Field(default="", alias="originalText")
+    normalized_value: str = Field(default="", alias="normalizedValue")
+    requirement_type: str = Field(default="", alias="requirementType")
+    priority: str = ""
+    explicit: bool = False
+    placement_strategy: dict[str, Any] = Field(default_factory=dict, alias="placementStrategy")
+    supported: bool = False
+    support_sources: list[str] = Field(default_factory=list, alias="supportSources")
+    warnings: list[InspectorWarning] = Field(default_factory=list)
+
+    model_config = ConfigDict(populate_by_name=True)
+
+
+class SummaryInspection(BaseModel):
+    generated_text: str = Field(default="", alias="generatedText")
+    current_text: str = Field(default="", alias="currentText")
+    validation_status: str = Field(default="", alias="validationStatus")
+    supporting_evidence_ids: list[str] = Field(default_factory=list, alias="supportingEvidenceIds")
+    supported_requirement_ids: list[str] = Field(default_factory=list, alias="supportedRequirementIds")
+    planner_version: str = Field(default="", alias="plannerVersion")
+    prompt_version: str = Field(default="", alias="promptVersion")
+    model: str = ""
+    warnings: list[InspectorWarning] = Field(default_factory=list)
+    evidence_details: list[EvidenceInspection] = Field(default_factory=list, alias="evidenceDetails")
+    requirement_details: list[RequirementInspection] = Field(default_factory=list, alias="requirementDetails")
+
+    model_config = ConfigDict(populate_by_name=True)
+
+
+class ExperienceBulletInspection(BaseModel):
+    bullet_id: str = Field(alias="bulletId")
+    experience_id: str = Field(alias="experienceId")
+    generated_text: str = Field(default="", alias="generatedText")
+    current_text: str = Field(default="", alias="currentText")
+    user_edited: bool = Field(default=False, alias="userEdited")
+    supporting_evidence_ids: list[str] = Field(default_factory=list, alias="supportingEvidenceIds")
+    supported_requirement_ids: list[str] = Field(default_factory=list, alias="supportedRequirementIds")
+    validation_status: str = Field(default="", alias="validationStatus")
+    generation_method: str = Field(default="", alias="generationMethod")
+    model: str = ""
+    prompt_version: str = Field(default="", alias="promptVersion")
+    warnings: list[InspectorWarning] = Field(default_factory=list)
+    evidence_details: list[EvidenceInspection] = Field(default_factory=list, alias="evidenceDetails")
+    requirement_details: list[RequirementInspection] = Field(default_factory=list, alias="requirementDetails")
+    source_technologies: list[str] = Field(default_factory=list, alias="sourceTechnologies")
+    source_projects: list[str] = Field(default_factory=list, alias="sourceProjects")
+
+    model_config = ConfigDict(populate_by_name=True)
+
+
+class ExperienceRoleInspection(BaseModel):
+    experience_id: str = Field(alias="experienceId")
+    role_title: str = Field(default="", alias="roleTitle")
+    role_family: str = Field(default="", alias="roleFamily")
+    bullet_count: int = Field(default=0, alias="bulletCount")
+    planner_version: str = Field(default="", alias="plannerVersion")
+    prompt_version: str = Field(default="", alias="promptVersion")
+    model: str = ""
+    validation_status: str = Field(default="", alias="validationStatus")
+    warnings: list[InspectorWarning] = Field(default_factory=list)
+    bullets: list[ExperienceBulletInspection] = Field(default_factory=list)
+
+    model_config = ConfigDict(populate_by_name=True)
+
+
+class ExperienceOverview(BaseModel):
+    role_count: int = Field(default=0, alias="roleCount")
+    bullet_count: int = Field(default=0, alias="bulletCount")
+    valid_bullet_count: int = Field(default=0, alias="validBulletCount")
+    warning_bullet_count: int = Field(default=0, alias="warningBulletCount")
+    fallback_bullet_count: int = Field(default=0, alias="fallbackBulletCount")
+    roles: list[ExperienceRoleInspection] = Field(default_factory=list)
+
+    model_config = ConfigDict(populate_by_name=True)
+
+
+class SkillInspection(BaseModel):
+    skill_id: str = Field(alias="skillId")
+    canonical_name: str = Field(default="", alias="canonicalName")
+    display_name: str = Field(default="", alias="displayName")
+    category: str = ""
+    tier: str = ""
+    score: int = 0
+    score_breakdown: dict[str, Any] = Field(default_factory=dict, alias="scoreBreakdown")
+    match_type: str = Field(default="", alias="matchType")
+    match_strength: str = Field(default="", alias="matchStrength")
+    evidence_strength: str = Field(default="", alias="evidenceStrength")
+    recency: str = ""
+    profile_only: bool = Field(default=False, alias="profileOnly")
+    supporting_evidence_ids: list[str] = Field(default_factory=list, alias="supportingEvidenceIds")
+    supported_requirement_ids: list[str] = Field(default_factory=list, alias="supportedRequirementIds")
+    inclusion_reason: str = Field(default="", alias="inclusionReason")
+    warnings: list[InspectorWarning] = Field(default_factory=list)
+    evidence_details: list[EvidenceInspection] = Field(default_factory=list, alias="evidenceDetails")
+    requirement_details: list[RequirementInspection] = Field(default_factory=list, alias="requirementDetails")
+
+    model_config = ConfigDict(populate_by_name=True)
+
+
+class ExcludedSkillInspection(BaseModel):
+    original_requirement_value: str = Field(default="", alias="originalRequirementValue")
+    canonical_name: str = Field(default="", alias="canonicalName")
+    requirement_ids: list[str] = Field(default_factory=list, alias="requirementIds")
+    exclusion_code: str = Field(default="", alias="exclusionCode")
+    reason: str = ""
+    requirement_details: list[RequirementInspection] = Field(default_factory=list, alias="requirementDetails")
+
+    model_config = ConfigDict(populate_by_name=True)
+
+
+class SkillsOverview(BaseModel):
+    skill_count: int = Field(default=0, alias="skillCount")
+    primary_skill_count: int = Field(default=0, alias="primarySkillCount")
+    secondary_skill_count: int = Field(default=0, alias="secondarySkillCount")
+    supporting_skill_count: int = Field(default=0, alias="supportingSkillCount")
+    excluded_skill_count: int = Field(default=0, alias="excludedSkillCount")
+    skills: list[SkillInspection] = Field(default_factory=list)
+    excluded_skills: list[ExcludedSkillInspection] = Field(default_factory=list, alias="excludedSkills")
+
+    model_config = ConfigDict(populate_by_name=True)
+
+
+class RequirementCoverageInspection(BaseModel):
+    requirement_id: str = Field(alias="requirementId")
+    requirement_text: str = Field(default="", alias="requirementText")
+    normalized_value: str = Field(default="", alias="normalizedValue")
+    type: str = ""
+    priority: str = ""
+    covered: bool = False
+    coverage_sources: list[str] = Field(default_factory=list, alias="coverageSources")
+    summary_support: bool = Field(default=False, alias="summarySupport")
+    experience_bullet_ids: list[str] = Field(default_factory=list, alias="experienceBulletIds")
+    skill_ids: list[str] = Field(default_factory=list, alias="skillIds")
+    exclusion_reason: str = Field(default="", alias="exclusionReason")
+    warnings: list[InspectorWarning] = Field(default_factory=list)
+
+    model_config = ConfigDict(populate_by_name=True)
+
+
+class VersionInspection(BaseModel):
+    job_analysis_version: str = Field(default="", alias="jobAnalysisVersion")
+    profile_match_version: str = Field(default="", alias="profileMatchVersion")
+    summary_planner_version: str = Field(default="", alias="summaryPlannerVersion")
+    summary_prompt_version: str = Field(default="", alias="summaryPromptVersion")
+    experience_planner_version: str = Field(default="", alias="experiencePlannerVersion")
+    experience_prompt_version: str = Field(default="", alias="experiencePromptVersion")
+    experience_writer_prompt_version: str = Field(default="", alias="experienceWriterPromptVersion")
+    experience_model: str = Field(default="", alias="experienceModel")
+    experience_model_configuration_hash: str = Field(default="", alias="experienceModelConfigurationHash")
+    skill_registry_version: str = Field(default="", alias="skillRegistryVersion")
+    skill_evidence_index_version: str = Field(default="", alias="skillEvidenceIndexVersion")
+    skills_planner_version: str = Field(default="", alias="skillsPlannerVersion")
+    skills_rendering_policy_version: str = Field(default="", alias="skillsRenderingPolicyVersion")
+    summary_model_configuration_hash: str = Field(default="", alias="summaryModelConfigurationHash")
+
+    model_config = ConfigDict(populate_by_name=True)
+
+
+class InspectionMetrics(BaseModel):
+    requirement_count: int = Field(default=0, alias="requirementCount")
+    covered_requirement_count: int = Field(default=0, alias="coveredRequirementCount")
+    coverage_percent: int = Field(default=0, alias="coveragePercent")
+    summary_evidence_count: int = Field(default=0, alias="summaryEvidenceCount")
+    role_count: int = Field(default=0, alias="roleCount")
+    bullet_count: int = Field(default=0, alias="bulletCount")
+    fallback_bullet_count: int = Field(default=0, alias="fallbackBulletCount")
+    skill_count: int = Field(default=0, alias="skillCount")
+    primary_skill_count: int = Field(default=0, alias="primarySkillCount")
+    secondary_skill_count: int = Field(default=0, alias="secondarySkillCount")
+    supporting_skill_count: int = Field(default=0, alias="supportingSkillCount")
+    excluded_skill_count: int = Field(default=0, alias="excludedSkillCount")
+    warning_count: int = Field(default=0, alias="warningCount")
+
+    model_config = ConfigDict(populate_by_name=True)
+
+
+class ResumeIntelligenceInspection(BaseModel):
+    package_id: str = Field(alias="packageId")
+    status: str = ""
+    stale: bool = False
+    stale_reasons: list[str] = Field(default_factory=list, alias="staleReasons")
+    warnings: list[InspectorWarning] = Field(default_factory=list)
+    profile_id: str = Field(default="", alias="profileId")
+    profile_version: int = Field(default=0, alias="profileVersion")
+    profile_hash: str = Field(default="", alias="profileHash")
+    jd_hash: str = Field(default="", alias="jdHash")
+    target_role: str = Field(default="", alias="targetRole")
+    target_company: str = Field(default="", alias="targetCompany")
+    target_level: str = Field(default="", alias="targetLevel")
+    created_at: str = Field(default="", alias="createdAt")
+    summary: SummaryInspection = Field(default_factory=SummaryInspection)
+    experience_overview: ExperienceOverview = Field(default_factory=ExperienceOverview, alias="experienceOverview")
+    skills_overview: SkillsOverview = Field(default_factory=SkillsOverview, alias="skillsOverview")
+    requirement_coverage: list[RequirementCoverageInspection] = Field(default_factory=list, alias="requirementCoverage")
+    versions: VersionInspection = Field(default_factory=VersionInspection)
+    metrics: InspectionMetrics = Field(default_factory=InspectionMetrics)
+
+    model_config = ConfigDict(populate_by_name=True)
+
+
 class CandidateProfileRecord(BaseModel):
     profile_id: str = Field(alias="profileId")
     user_id: str = Field(alias="userId")
