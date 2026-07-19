@@ -5276,3 +5276,15 @@ asyncio.exceptions.CancelledError
 INFO:     Started server process [9644]
 INFO:     Waiting for application startup.
 INFO:     Application startup complete.
+WARNING:  WatchFiles detected changes in 'app\services\skill_registry.py'. Reloading...
+INFO:     Shutting down
+INFO:     Waiting for application shutdown.
+INFO:     Application shutdown complete.
+INFO:     Finished server process [9644]
+WARNING:  WatchFiles detected changes in 'tests\test_skill_registry.py', 'app\services\skill_registry.py'. Reloading...
+C:\Users\venum\AppData\Roaming\Python\Python313\site-packages\uvicorn\_subprocess.py:84: RuntimeWarning: coroutine 'Server.serve' was never awaited
+  pass
+RuntimeWarning: Enable tracemalloc to get the object allocation traceback
+INFO:     Started server process [34508]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
