@@ -98,11 +98,17 @@ def test_inferred_leadership_is_normally_medium_not_high() -> None:
 
 
 def test_years_of_experience_scores_high() -> None:
-    experience = keyword_map("7+ years of professional software development experience.")[
-        "7+ Years of Experience"
-    ]
+    payload = GenerateResumeRequest(
+        job_description="7+ years of professional software development experience.",
+        target_role="Software Engineer",
+        target_company="Target Company",
+        level="Senior",
+    )
+    response = build_job_analysis_response(payload, build_jd_intelligence_from_rules(payload))
+    experience = response.experience_requirements[0]
 
-    assert experience.priority == "high"
+    assert experience.canonical_term == "7+ Years of Experience"
+    assert experience.priority == "critical"
 
 
 def test_required_scores_above_preferred() -> None:

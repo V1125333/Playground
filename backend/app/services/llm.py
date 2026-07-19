@@ -18,6 +18,7 @@ from app.schemas.resume import (
     JobAnalysisResponse,
     JobKeywordAnalysisItem,
     JobRoleInformation,
+    NormalizedRequirements,
     PhaseOneJobIntelligence,
     PhaseOneJobIntelligenceResponse,
     RequirementIntelligence,
@@ -34,8 +35,11 @@ from app.schemas.resume import (
     ResumeStrategyRequest,
     ResumeStrategyResponse,
     ExperienceStrategyItem as ExperienceStrategyItemSchema,
+    AtsAnalysis,
+    AtsAnalysisBreakdown,
     GenerateResumeRequest,
     GenerateResumeResponse,
+    GenerationMetadata,
     LayoutContract,
     ResumeAiMetrics,
     ResumeCertification,
@@ -46,6 +50,7 @@ from app.schemas.resume import (
     ResumeProject,
     ResumeSuggestion,
     SkillCategory,
+    TypedJobRequirement,
 )
 from app.services.ai_usage import AICompletionResult, get_ai_service, recent_job_id
 from app.services.resume_generation_contract import (
@@ -2555,9 +2560,27 @@ def build_jd_intelligence_from_rules(payload: GenerateResumeRequest) -> JdIntell
 
 def years_of_experience_keyword(job_description: str) -> JdKeyword | None:
     match = re.search(r"(?i)\b(\d+\+?)\s+years?\b", job_description)
-    if not match:
+    if match:
+        return JdKeyword(term=f"{match.group(1)} Years of Experience", priority="critical", weight=10)
+    word_numbers = {
+        "one": "1",
+        "two": "2",
+        "three": "3",
+        "four": "4",
+        "five": "5",
+        "six": "6",
+        "seven": "7",
+        "eight": "8",
+        "nine": "9",
+        "ten": "10",
+    }
+    word_match = re.search(
+        r"(?i)\b(one|two|three|four|five|six|seven|eight|nine|ten)\s+years?\b",
+        job_description,
+    )
+    if not word_match:
         return None
-    return JdKeyword(term=f"{match.group(1)} Years of Experience", priority="critical", weight=10)
+    return JdKeyword(term=f"{word_numbers[word_match.group(1).lower()]} Years of Experience", priority="critical", weight=10)
 
 
 def enrich_jd_intelligence_with_semantics(
@@ -2701,6 +2724,20 @@ def canonicalize_jd_term_display(term: str) -> str:
         ".net": ".NET",
         "dot net": ".NET",
         "net / asp.net core / mvc": ".NET / ASP.NET Core / MVC",
+        "microsoft sql": "MS SQL Server",
+        "microsoft-sql": "MS SQL Server",
+        "microsoft sql server": "MS SQL Server",
+        "sql server": "MS SQL Server",
+        "ms sql server": "MS SQL Server",
+        "such as sql": "MS SQL Server",
+        "azure is": "Azure",
+        "rest": "REST API",
+        "rest api": "REST API",
+        "rest apis": "REST API",
+        "restful api": "REST API",
+        "restful apis": "REST API",
+        "web api": "REST API",
+        "web apis": "REST API",
         "support sdlc": "SDLC",
         "sdlc release": "release management",
         "azure cloud": "Azure cloud environment",
@@ -2718,6 +2755,7 @@ def canonicalize_jd_term_display(term: str) -> str:
         "scalable software": "Scalable Software",
         "analyze existing workflows": "Workflow Analysis",
         "workflow analysis": "Workflow Analysis",
+        "testing": "Testing Best Practices",
     }
     if key in replacements:
         return replacements[key]
@@ -2734,7 +2772,7 @@ def is_noise_keyword(term: str) -> bool:
     if len(words) == 1 and (
         words[0].isdigit()
         or words[0] in {"one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten"}
-        or words[0] in {"ensure", "build", "develop", "maintain", "modify", "write", "skills", "mastery", "expertise", "strong"}
+        or words[0] in {"ensure", "build", "develop", "maintain", "modify", "write", "adhere", "adhering", "skills", "mastery", "expertise", "strong"}
     ):
         return True
     if " as needed" in key:
@@ -2755,6 +2793,8 @@ def is_noise_keyword(term: str) -> bool:
         "all the audit",
         "delivery dates",
         "strong",
+        "hands-on",
+        "hands-on experience",
     }
 
 
@@ -2897,6 +2937,7 @@ def build_job_analysis_response(
     intelligence: JdIntelligence,
 ) -> JobAnalysisResponse:
     role_context = infer_role_context_for_analysis(payload, intelligence)
+    typed_requirements = build_typed_requirements(payload, intelligence)
     technical_skills = {
         "languages": analysis_items_for_terms(intelligence, ("c#", "python", "javascript", "typescript", "sql", "t-sql"), "Languages", payload.job_description, payload.target_role),
         "frameworks": analysis_items_for_terms(intelligence, (".net", "asp.net", "entity framework", "angular", "react", "node"), "Frameworks", payload.job_description, payload.target_role),
@@ -2937,12 +2978,25 @@ def build_job_analysis_response(
             *hidden_inferred,
         ]
     )
+    all_keywords = legacy_keywords_from_typed_requirements(all_keywords, typed_requirements)
     direct_keywords = [item for item in all_keywords if item.direct_from_jd]
     inferred_keywords = [item for item in all_keywords if item.source_type == "inferred"]
     suggested_keywords = [item for item in all_keywords if item.source_type == "suggested"]
 
     return JobAnalysisResponse(
         roleInformation=role_context,
+        technicalRequirements=typed_requirements.technical_requirements,
+        responsibilityRequirements=typed_requirements.responsibility_requirements,
+        experienceRequirements=typed_requirements.experience_requirements,
+        educationRequirements=typed_requirements.education_requirements,
+        certificationRequirements=typed_requirements.certification_requirements,
+        leadershipRequirements=typed_requirements.leadership_requirements,
+        softSkillRequirements=typed_requirements.soft_skill_requirements,
+        domainRequirements=typed_requirements.domain_requirements,
+        inferredRequirements=typed_requirements.inferred_requirements,
+        excludedNoiseTerms=intelligence.noise_terms_to_exclude,
+        analysisWarnings=typed_requirement_warnings(typed_requirements),
+        normalizedRequirements=typed_requirements,
         keywords=all_keywords,
         explicitKeywords=direct_keywords,
         inferredKeywords=inferred_keywords,
@@ -2977,6 +3031,336 @@ def build_job_analysis_response(
         totalExtractedKeywords=len(explicit_keywords),
         analysisHash=analysis_hash(payload),
     )
+
+
+def build_typed_requirements(
+    payload: GenerateResumeRequest,
+    intelligence: JdIntelligence,
+) -> NormalizedRequirements:
+    grouped: dict[str, list[TypedJobRequirement]] = {
+        "technical_requirements": [],
+        "responsibility_requirements": [],
+        "experience_requirements": [],
+        "education_requirements": [],
+        "certification_requirements": [],
+        "leadership_requirements": [],
+        "soft_skill_requirements": [],
+        "domain_requirements": [],
+        "inferred_requirements": [],
+    }
+    seen: dict[str, TypedJobRequirement] = {}
+    keyword_sources = typed_keyword_sources(intelligence)
+    for field_name, keyword in keyword_sources:
+        item = analysis_item(keyword, typed_category_for_keyword(field_name, keyword.term), payload.job_description, payload.target_role)
+        requirement = typed_requirement_from_analysis_item(item, field_name, payload.job_description)
+        if not requirement:
+            continue
+        requirement_key = normalize_skill_key(requirement.canonical_term)
+        existing = seen.get(requirement_key)
+        if existing:
+            seen[requirement_key] = merge_typed_requirements(existing, requirement)
+        else:
+            seen[requirement_key] = requirement
+
+    for requirement in seen.values():
+        group_name = typed_requirement_group(requirement)
+        grouped[group_name].append(requirement)
+
+    concrete_database_keys = {
+        normalize_skill_key(item.canonical_term)
+        for item in grouped["technical_requirements"]
+        if normalize_skill_key(item.canonical_term) in {"sql server", "ms sql server", "oracle", "postgresql", "mysql", "mongodb"}
+    }
+    if concrete_database_keys:
+        # Keep broad database capability, but make sure it remains broad and does not duplicate concrete tools.
+        adjusted = []
+        for item in grouped["technical_requirements"]:
+            if normalize_skill_key(item.canonical_term) == "databases":
+                adjusted.append(
+                    item.model_copy(
+                        update={
+                            "priority": "medium",
+                            "reason": "Broad database capability kept separate from named database products.",
+                        }
+                    )
+                )
+            else:
+                adjusted.append(item)
+        grouped["technical_requirements"] = adjusted
+
+    for key in grouped:
+        grouped[key] = sorted(grouped[key], key=lambda item: (typed_priority_rank(item.priority), item.canonical_term.lower()))
+
+    return NormalizedRequirements(
+        technicalRequirements=grouped["technical_requirements"],
+        responsibilityRequirements=grouped["responsibility_requirements"],
+        experienceRequirements=grouped["experience_requirements"],
+        educationRequirements=grouped["education_requirements"],
+        certificationRequirements=grouped["certification_requirements"],
+        leadershipRequirements=grouped["leadership_requirements"],
+        softSkillRequirements=grouped["soft_skill_requirements"],
+        domainRequirements=grouped["domain_requirements"],
+        inferredRequirements=grouped["inferred_requirements"],
+    )
+
+
+def typed_keyword_sources(intelligence: JdIntelligence) -> list[tuple[str, JdKeyword]]:
+    sources: list[tuple[str, JdKeyword]] = []
+    for field_name in jd_keyword_field_names():
+        for keyword in getattr(intelligence, field_name):
+            sources.append((field_name, keyword))
+    return sources
+
+
+def typed_category_for_keyword(field_name: str, term: str) -> str:
+    if field_name == "hard_skills":
+        return "Technical Skill"
+    if field_name in {"critical_keywords", "important_keywords", "preferred_keywords"}:
+        return category_for_term(term)
+    return {
+        "soft_skills": "Soft Skill",
+        "seniority_signals": "Seniority",
+        "leadership_requirements": "Leadership",
+        "architecture_requirements": "Architecture",
+        "cloud_requirements": "Cloud",
+        "api_requirements": "API",
+        "database_requirements": "Database",
+        "security_compliance_requirements": "Security and Compliance",
+        "sdlc_delivery_requirements": "SDLC and Delivery",
+        "documentation_review_requirements": "Documentation and Review",
+        "domain_terms": "Domain",
+    }.get(field_name, category_for_term(term))
+
+
+def category_for_term(term: str) -> str:
+    text = normalize_text(term)
+    if "year" in text and "experience" in text:
+        return "Experience"
+    if "degree" in text or "bachelor" in text or "master" in text:
+        return "Education"
+    if "certif" in text:
+        return "Certification"
+    if any(marker in text for marker in ("leadership", "mentor", "lead ", "sme", "subject matter expert")):
+        return "Leadership"
+    if any(marker in text for marker in ("collaborat", "communicat", "problem solving", "independent")):
+        return "Soft Skill"
+    return "Technical Skill"
+
+
+def typed_requirement_from_analysis_item(
+    item: JobKeywordAnalysisItem,
+    source_field: str,
+    job_description: str,
+) -> TypedJobRequirement | None:
+    canonical = normalize_keyword(item.value or item.term)
+    if not canonical or is_noise_keyword(canonical):
+        return None
+    category = typed_category_for_keyword(source_field, canonical)
+    source_sentence = item.source_sentence or direct_source_sentence_for_requirement(canonical, job_description)
+    direct = bool(source_sentence and requirement_is_explicit(canonical, source_sentence))
+    if source_field == "preferred_keywords" and not direct:
+        direct = False
+    if not direct and normalize_skill_key(canonical) in UNSAFE_SPECIFIC_EXPANSIONS:
+        return None
+    requirement_level = requirement_level_for(canonical, source_sentence, source_field, direct)
+    group_category = category_for_term(canonical) if category in {"Critical", "Important", "Preferred"} else category
+    if requirement_level == "inferred" or not direct:
+        group_category = category if category not in {"Critical", "Important", "Preferred"} else category_for_term(canonical)
+    return TypedJobRequirement(
+        requirementId=typed_requirement_id(group_category, canonical),
+        canonicalTerm=canonical,
+        originalTerms=dedupe_preserve_order([item.term, item.value, item.normalized_value]),
+        category=group_category,
+        requirementLevel=requirement_level,
+        priority=typed_priority_for(item, source_field, canonical),
+        explicit=direct,
+        confidence=typed_confidence_for(item, direct),
+        evidenceText=source_sentence or "",
+        sourceSentence=source_sentence or "",
+        reason=typed_requirement_reason(canonical, direct, requirement_level, source_sentence),
+    )
+
+
+def direct_source_sentence_for_requirement(term: str, job_description: str) -> str:
+    aliases = TECH_ALIASES.get(canonical_keyword(term), ())
+    direct = find_direct_jd_evidence(term, job_description, aliases)
+    if direct:
+        return direct
+    term_key = normalize_text(term)
+    occurrence_aliases = keyword_occurrence_aliases(term_key)
+    for sentence in jd_sentences(job_description):
+        text = normalize_text(sentence)
+        if any(contains_phrase(text, alias) for alias in occurrence_aliases if alias):
+            return sentence.strip()
+        if "years of experience" in term_key and re.search(
+            r"\b(?:\d+\+?|one|two|three|four|five|six|seven|eight|nine|ten)\s*(?:-\s*\d+\+?)?\s+years?\b",
+            text,
+        ):
+            return sentence.strip()
+        if ("degree" in term_key or "bachelor" in term_key) and ("degree" in text or "bachelor" in text):
+            return sentence.strip()
+        if term_key == "databases" and "database" in text:
+            return sentence.strip()
+        if term_key == "cloud platforms" and "cloud" in text:
+            return sentence.strip()
+    return ""
+
+
+def jd_sentences(job_description: str) -> list[str]:
+    return [sentence.strip(" -*\t\r\n.") for sentence in re.split(r"[\n.;]+", job_description) if sentence.strip(" -*\t\r\n.")]
+
+
+def requirement_is_explicit(term: str, source_sentence: str) -> bool:
+    if not source_sentence:
+        return False
+    key = normalize_text(term)
+    text = normalize_text(source_sentence)
+    if "years of experience" in key:
+        return bool(
+            re.search(
+                r"\b(?:\d+\+?|one|two|three|four|five|six|seven|eight|nine|ten)\s*(?:-\s*\d+\+?)?\s+years?\b",
+                text,
+            )
+        )
+    if "degree" in key or "bachelor" in key:
+        return "degree" in text or "bachelor" in text
+    if key == "databases":
+        return "database" in text
+    aliases = keyword_occurrence_aliases(key)
+    return any(contains_phrase(text, alias) for alias in aliases if alias)
+
+
+def requirement_level_for(term: str, source_sentence: str, source_field: str, direct: bool) -> str:
+    text = normalize_text(source_sentence)
+    term_key = normalize_text(term)
+    if not direct:
+        return "inferred"
+    if "preferred" in text or source_field == "preferred_keywords":
+        return "preferred"
+    if "year" in term_key or "degree" in term_key or "bachelor" in term_key or any(marker in text for marker in REQUIRED_WORDING):
+        return "required"
+    return "responsibility"
+
+
+def typed_priority_for(item: JobKeywordAnalysisItem, source_field: str, term: str) -> str:
+    if source_field == "critical_keywords" or enum_value(item.priority) == "high" and item.priority_score >= 80:
+        return "critical"
+    if enum_value(item.priority) == "high":
+        return "high"
+    if enum_value(item.priority) == "low":
+        return "low"
+    if normalize_text(term) in {"communication skills", "collaboration", "problem solving"}:
+        return "medium"
+    return "medium"
+
+
+def typed_confidence_for(item: JobKeywordAnalysisItem, direct: bool) -> float:
+    base = {"high": 0.95, "medium": 0.82, "low": 0.62}.get(enum_value(item.confidence), 0.75)
+    return base if direct else min(base, 0.68)
+
+
+def typed_requirement_reason(term: str, direct: bool, level: str, source_sentence: str) -> str:
+    if direct:
+        return f"{term} is a {level} requirement supported by job-description evidence."
+    return f"{term} is kept as inferred only; it is not directly named in the job description."
+
+
+def typed_requirement_id(category: str, canonical: str) -> str:
+    value = f"{normalize_category(category)}:{normalize_keyword(canonical)}"
+    return "req-" + hashlib.sha256(normalize_text(value).encode("utf-8")).hexdigest()[:16]
+
+
+def typed_requirement_group(requirement: TypedJobRequirement) -> str:
+    text = normalize_text(requirement.canonical_term)
+    category = normalize_text(requirement.category)
+    if requirement.requirement_level == "inferred" or not requirement.explicit:
+        return "inferred_requirements"
+    if "year" in text and "experience" in text:
+        return "experience_requirements"
+    if "degree" in text or "bachelor" in text or category == "education":
+        return "education_requirements"
+    if "certif" in text or category == "certification":
+        return "certification_requirements"
+    if category in {"leadership", "seniority"}:
+        return "leadership_requirements"
+    if category in {"soft skill", "collaboration", "problem solving"}:
+        return "soft_skill_requirements"
+    if category == "domain":
+        return "domain_requirements"
+    if category in {"sdlc and delivery", "documentation and review", "security and compliance"}:
+        return "responsibility_requirements"
+    return "technical_requirements"
+
+
+def typed_priority_rank(priority: str) -> int:
+    return {"critical": 0, "high": 1, "medium": 2, "low": 3}.get(enum_value(priority), 4)
+
+
+def merge_typed_requirements(left: TypedJobRequirement, right: TypedJobRequirement) -> TypedJobRequirement:
+    return left.model_copy(
+        update={
+            "original_terms": dedupe_preserve_order([*left.original_terms, *right.original_terms]),
+            "priority": sorted([left.priority, right.priority], key=typed_priority_rank)[0],
+            "confidence": max(left.confidence, right.confidence),
+            "explicit": left.explicit or right.explicit,
+            "evidence_text": left.evidence_text or right.evidence_text,
+            "source_sentence": left.source_sentence or right.source_sentence,
+            "reason": left.reason if left.explicit else right.reason,
+        }
+    )
+
+
+def typed_requirement_warnings(requirements: NormalizedRequirements) -> list[str]:
+    warnings: list[str] = []
+    for item in all_typed_requirements(requirements):
+        if item.explicit and not item.evidence_text:
+            warnings.append(f"Explicit requirement lacks evidence text: {item.canonical_term}.")
+    return dedupe_preserve_order(warnings)
+
+
+def all_typed_requirements(requirements: NormalizedRequirements) -> list[TypedJobRequirement]:
+    return [
+        *requirements.technical_requirements,
+        *requirements.responsibility_requirements,
+        *requirements.experience_requirements,
+        *requirements.education_requirements,
+        *requirements.certification_requirements,
+        *requirements.leadership_requirements,
+        *requirements.soft_skill_requirements,
+        *requirements.domain_requirements,
+        *requirements.inferred_requirements,
+    ]
+
+
+def legacy_keywords_from_typed_requirements(
+    items: list[JobKeywordAnalysisItem],
+    requirements: NormalizedRequirements,
+) -> list[JobKeywordAnalysisItem]:
+    eligible_terms = {
+        normalize_skill_key(item.canonical_term)
+        for item in [
+            *requirements.technical_requirements,
+            *requirements.responsibility_requirements,
+            *requirements.leadership_requirements,
+            *requirements.soft_skill_requirements,
+            *requirements.domain_requirements,
+        ]
+        if legacy_requirement_is_eligible(item, requirements)
+    }
+    output = []
+    for item in items:
+        if normalize_skill_key(normalize_keyword(item.value or item.term)) in eligible_terms:
+            output.append(item)
+    return dedupe_analysis_items(output)
+
+
+def legacy_requirement_is_eligible(item: TypedJobRequirement, requirements: NormalizedRequirements) -> bool:
+    text = normalize_text(item.canonical_term)
+    if "year" in text and "experience" in text:
+        return False
+    if "degree" in text or "bachelor" in text:
+        return False
+    return item.explicit and item.requirement_level != "inferred"
 
 
 def infer_role_context_for_analysis(
@@ -3038,7 +3422,7 @@ def analysis_item(keyword: JdKeyword, category: str, job_description: str = "", 
     source_sentence = find_direct_jd_evidence(
         keyword.term,
         job_description,
-        TECH_ALIASES.get(canonical_keyword(keyword.term), ()),
+        keyword_occurrence_aliases(keyword.term),
     )
     direct_from_jd = source_sentence is not None
     source_type = "explicit" if direct_from_jd else "suggested" if category in {"Inferred", "Preferred"} or keyword.priority == "preferred" else "inferred"
@@ -3256,9 +3640,15 @@ def count_keyword_occurrences(canonical: str, job_description: str) -> int:
 
 
 def keyword_occurrence_aliases(canonical: str) -> tuple[str, ...]:
-    aliases = list(CANONICAL_KEYWORD_ALIASES.get(canonical, ()))
+    canonical_display = normalize_keyword(canonical)
+    aliases: list[str] = []
+    for known_canonical, known_aliases in CANONICAL_KEYWORD_ALIASES.items():
+        if normalize_text(known_canonical) in {normalize_text(canonical), normalize_text(canonical_display)}:
+            aliases.extend(known_aliases)
+            break
     aliases.append(canonical)
-    aliases.extend(TECH_ALIASES.get(canonical_keyword(canonical), ()))
+    aliases.append(canonical_display)
+    aliases.extend(TECH_ALIASES.get(canonical_keyword(canonical_display), ()))
     return tuple(dedupe_preserve_order([normalize_text(alias) for alias in aliases if alias]))
 
 
@@ -3419,16 +3809,34 @@ CANONICAL_KEYWORD_ALIASES: dict[str, tuple[str, ...]] = {
         "collaboration with stakeholders",
         "business stakeholder collaboration",
         "technical and business stakeholder collaboration",
+        "stakeholders to gather requirements",
+        "stakeholders",
     ),
     "Problem Solving": ("problem solving", "problem-solving", "problem solving skills", "problem-solving skills"),
-    "Technical Leadership": ("technical leadership", "engineering leadership", "technical guidance", "developer guidance"),
+    "Technical Leadership": (
+        "technical leadership",
+        "engineering leadership",
+        "technical guidance",
+        "technical guidance to developers",
+        "guidance to developers",
+        "developer guidance",
+        "guide junior developers",
+        "guidance",
+    ),
+    "Requirements Gathering": ("requirements gathering", "gather requirements", "gathering requirements"),
     "Version Control": ("version control", "source control"),
-    "Testing Best Practices": ("testing best practices", "software testing best practices"),
+    "Testing Best Practices": ("testing best practices", "software testing best practices", "testing"),
+    "MS SQL Server": ("ms sql server", "microsoft sql server", "microsoft sql", "sql server", "mssql", "t-sql", "tsql"),
+    "REST API": ("rest api", "rest apis", "restful api", "restful apis", "web api", "web apis", "api", "apis", "rest"),
     "Operational Efficiency": ("operational efficiency", "workflow efficiency", "process efficiency"),
+    "Workflow Analysis": ("workflow analysis", "analyze existing workflows", "existing workflows"),
+    "Quality Improvement": ("quality improvement", "quality improvements", "process and quality improvements"),
     "Knowledge Sharing": ("knowledge sharing", "knowledge transfer"),
     "High-Performance Software": ("high-performing software", "high-performance software", "high performance software"),
     "Reliable Software Design": ("reliable software", "reliable software design"),
     "Scalable Enterprise Applications": ("scalable enterprise applications",),
+    "Research Applications": ("research applications", "research activities"),
+    "Front-Office Applications": ("front-office applications", "front office applications"),
     ".NET": (".net", "dotnet", "dot net"),
     "C#": ("c#", "c sharp"),
 }
@@ -3774,7 +4182,7 @@ async def generate_resume_with_openai(
     if effective_score < 90:
         improved_response, improve_results = await improve_resume_with_openai(ai_service, payload, profile, response, ats_result, jd_intelligence)
         ai_results.extend(improve_results)
-        if improved_response:
+    if improved_response:
             improved_response = normalize_generated_response(enforce_profile_header(improved_response, profile), payload, profile, jd_intelligence)
             improved_response, improved_repair_results = await validate_and_repair_resume_with_openai(
                 ai_service,
@@ -3799,8 +4207,21 @@ async def generate_resume_with_openai(
                 effective_score = improved_effective_score
                 quality_suggestions = improved_quality_suggestions
     suggestions = merge_metric_flag_suggestions([*semantic_plan_suggestions(semantic_plan), *quality_suggestions, *ats_result.suggestions], response.resume)
+    ai_metrics = build_ai_metrics(ai_results, started, effective_score, response.resume, payload, jd_intelligence)
     return response.model_copy(
         update={
+            "ats_analysis": AtsAnalysis(
+                score=effective_score,
+                breakdown=AtsAnalysisBreakdown(
+                    keywordMatch=ats_result.breakdown.keyword_match,
+                    formatting=ats_result.breakdown.formatting,
+                    readability=ats_result.breakdown.readability,
+                    matchedKeywords=ats_result.breakdown.matched_keywords,
+                    missingKeywords=ats_result.breakdown.missing_keywords,
+                ),
+                coverage=ats_result.breakdown.coverage,
+                suggestions=suggestions,
+            ),
             "ats_score": effective_score,
             "breakdown": ats_result.breakdown,
             "suggestions": suggestions,
@@ -3809,7 +4230,12 @@ async def generate_resume_with_openai(
                 ats_safe=True,
             ),
             "semantic_plan": semantic_plan,
-            "ai_metrics": build_ai_metrics(ai_results, started, effective_score, response.resume, payload, jd_intelligence),
+            "generation_metadata": GenerationMetadata(
+                model=settings.ai_model_resume_generation,
+                durationMs=ai_metrics.generation_time_ms,
+                pipelineVersion=response.structured_resume.generation_algorithm_version if response.structured_resume else "",
+            ),
+            "ai_metrics": ai_metrics,
         }
     )
 
@@ -3861,11 +4287,23 @@ def deterministic_resume(profile: CandidateProfile, payload: GenerateResumeReque
 
     return GenerateResumeResponse(
         resume=resume,
+        atsAnalysis=AtsAnalysis(
+            score=effective_score,
+            breakdown=AtsAnalysisBreakdown(
+                keywordMatch=ats_result.breakdown.keyword_match,
+                formatting=ats_result.breakdown.formatting,
+                readability=ats_result.breakdown.readability,
+                matchedKeywords=ats_result.breakdown.matched_keywords,
+                missingKeywords=ats_result.breakdown.missing_keywords,
+            ),
+            coverage=ats_result.breakdown.coverage,
+            suggestions=merge_metric_flag_suggestions([*semantic_plan_suggestions(semantic_plan), *quality_suggestions, *ats_result.suggestions], resume),
+        ),
         atsScore=effective_score,
         breakdown=ats_result.breakdown,
-        suggestions=merge_metric_flag_suggestions([*semantic_plan_suggestions(semantic_plan), *quality_suggestions, *ats_result.suggestions], resume),
         layoutContract=LayoutContract(paperSize=payload.paper_size, atsSafe=True),
         semanticPlan=semantic_plan,
+        generationMetadata=GenerationMetadata(model=settings.ai_model_resume_generation, pipelineVersion="legacy-llm-generation"),
         aiMetrics=ResumeAiMetrics(
             atsScore=effective_score,
             validationScore=recruiter_quality_score(resume, payload, jd_intelligence)[0],
@@ -5130,11 +5568,11 @@ def themed_fallback_bullets(
         if latest and not support:
             bullets = [
                 f"Designed senior-level delivery plans for healthcare provider portal enhancements across {human_join(primary[:3])}, SQL Server, and object-oriented design practices, improving design traceability before release.",
-                f"Reviewed API, database, and UI changes with engineering teams to improve code quality, maintainability, and release readiness for enterprise healthcare modules.",
-                f"Led root-cause discussions for complex application defects by correlating logs, SQL behavior, and service-layer code paths into clear remediation plans.",
+                "Reviewed API, database, and UI changes with engineering teams to improve code quality, maintainability, and release readiness for enterprise healthcare modules.",
+                "Led root-cause discussions for complex application defects by correlating logs, SQL behavior, and service-layer code paths into clear remediation plans.",
                 "Authored technical notes, release handoffs, and validation guidance so architects, QA, business users, and stakeholders could track decisions with less ambiguity.",
-                f"Coordinated Agile/Scrum planning across development, QA, and product partners to balance application design work with production-quality delivery.",
-                f"Strengthened secure release practices by validating authentication, authorization, and data-access behavior before production deployment.",
+                "Coordinated Agile/Scrum planning across development, QA, and product partners to balance application design work with production-quality delivery.",
+                "Strengthened secure release practices by validating authentication, authorization, and data-access behavior before production deployment.",
             ]
             return add_metrics_to_bullets(bullets, experience.raw_notes)
         bullets = [
@@ -5142,8 +5580,8 @@ def themed_fallback_bullets(
             f"Optimized API and database analysis across {human_join(data[:3])} to reduce recurring defects in healthcare application workflows.",
             f"Reviewed release changes, code quality, and regression evidence for {role} deliverables, helping stabilize deployments for healthcare workflows.",
             "Authored technical notes for incident resolution, data fixes, and release handoffs so stakeholders could track decisions and follow-up actions.",
-            f"Integrated stakeholder feedback into support priorities across Agile/Scrum ceremonies, balancing production issues with planned SDLC delivery.",
-            f"Supported secure application updates by validating authentication, authorization, and data-access behavior before production release.",
+            "Integrated stakeholder feedback into support priorities across Agile/Scrum ceremonies, balancing production issues with planned SDLC delivery.",
+            "Supported secure application updates by validating authentication, authorization, and data-access behavior before production release.",
         ]
         return add_metrics_to_bullets(bullets, experience.raw_notes)
 
@@ -5151,19 +5589,19 @@ def themed_fallback_bullets(
         bullets = [
             f"Built full-stack software development features with {human_join([*frontend[:2], *primary[:2]][:4])} for HiTrust, MYCSF, and HAX workflows used in audit readiness activities.",
             f"Integrated vendor management APIs with {human_join(primary[:3])}, improving data exchange reliability across compliance and security modules.",
-            f"Designed Entity Framework data access patterns, SQL Server updates, and object-oriented service logic to support secure evidence tracking, questionnaire workflows, and reporting screens.",
+            "Designed Entity Framework data access patterns, SQL Server updates, and object-oriented service logic to support secure evidence tracking, questionnaire workflows, and reporting screens.",
             "Implemented authentication and authorization checks across Angular and ASP.NET Core screens, strengthening access control for compliance users.",
             "Authored technical documentation for API behavior, field mappings, and deployment notes to reduce handoff friction during releases.",
-            f"Coordinated with product, QA, and business users through Agile/Scrum delivery to validate features before release.",
+            "Coordinated with product, QA, and business users through Agile/Scrum delivery to validate features before release.",
         ]
         return add_metrics_to_bullets(bullets, experience.raw_notes)
 
     if "tata" in company_key or "tcs" in company_key or "consultancy" in company_key:
         bullets = [
             f"Designed AML and compliance application changes using {human_join(primary[:3])}, data structures, and object-oriented design for enterprise financial-system workflows.",
-            f"Built REST API and SQL Server enhancements that improved transaction review, case-management, and regulatory reporting support.",
+            "Built REST API and SQL Server enhancements that improved transaction review, case-management, and regulatory reporting support.",
             "Reviewed code changes for authentication, authorization, and data-validation logic, helping reduce defects before release.",
-            f"Automated repeatable validation steps with SQL scripts and test evidence, improving SDLC traceability for audit-focused releases.",
+            "Automated repeatable validation steps with SQL scripts and test evidence, improving SDLC traceability for audit-focused releases.",
             "Mentored junior developers through code walkthroughs, defect analysis, and implementation planning for compliance application modules.",
             "Documented technical designs, release notes, and support procedures so production teams could troubleshoot incidents with clearer context.",
         ]
@@ -5173,7 +5611,7 @@ def themed_fallback_bullets(
         [
             f"Designed service-layer changes with {human_join(primary[:3])} and object-oriented design for business-critical application workflows, improving maintainability and troubleshooting clarity.",
             f"Integrated REST APIs, SQL Server data access, and {human_join(frontend[:2]) or 'front-end screens'} to support full-stack delivery across SDLC phases.",
-            f"Resolved production defects by analyzing logs, database behavior, and application code paths, reducing repeat issues for engineering and QA teams.",
+            "Resolved production defects by analyzing logs, database behavior, and application code paths, reducing repeat issues for engineering and QA teams.",
             "Reviewed code, test evidence, and deployment notes to improve release readiness for business-critical changes.",
             "Authored technical documentation covering implementation decisions, validation steps, and operational handoff details.",
             "Led product collaboration with stakeholders around customer pain points, SDLC requirements, API/data tradeoffs, and release risk so engineering decisions improved user impact and business outcome.",
@@ -5181,7 +5619,7 @@ def themed_fallback_bullets(
         [
             f"Built secure application workflows with {human_join(primary[:3])}, applying authentication, authorization, and validation patterns across core modules.",
             f"Optimized database and API interactions using {human_join(data[:3])}, improving reliability for high-volume business processes.",
-            f"Automated regression checks and release validation steps to strengthen deployment confidence across Agile/Scrum sprints.",
+            "Automated regression checks and release validation steps to strengthen deployment confidence across Agile/Scrum sprints.",
             f"Integrated cloud or DevOps dependencies through {human_join(cloud[:3]) or 'deployment pipelines'} when release scope required environment coordination.",
             "Resolved escalated issues by pairing root-cause analysis with clear remediation notes and stakeholder communication.",
             "Mentored teammates through design reviews, code reviews, and release-readiness follow-up.",

@@ -7,7 +7,7 @@ import json
 import sqlite3
 import time
 from dataclasses import dataclass
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from pathlib import Path
 from threading import Lock
 from typing import Any
@@ -22,6 +22,8 @@ MODEL_KEY_TO_SETTING = {
     "semantic_mapping": "ai_model_semantic_mapping",
     "resume_strategy": "ai_model_resume_strategy",
     "resume_generation": "ai_model_resume_generation",
+    "summary_generation": "openai_summary_model",
+    "experience_generation": "openai_experience_model",
     "ats_validation": "ai_model_ats_validation",
     "formatting": "ai_model_formatting",
 }
@@ -419,6 +421,146 @@ class AIService:
                 raise
         raise RuntimeError(last_error or "AI call failed.")
 
+    async def responses_json(
+        self,
+        *,
+        feature: str,
+        purpose: str,
+        model_key: str,
+        system_prompt: str,
+        user_payload: dict[str, Any],
+        json_schema: dict[str, Any],
+        max_output_tokens: int,
+        timeout_seconds: int,
+        cache_parts: dict[str, Any] | None = None,
+        user: str = "local-user",
+        resume_id: str = "",
+        job_id: str = "",
+    ) -> AICompletionResult:
+        model = self.model_for(model_key)
+        cache_key = ""
+        request_hash = stable_hash(
+            {
+                "systemPrompt": system_prompt,
+                "userPayload": user_payload,
+                "jsonSchema": json_schema,
+                "maxOutputTokens": max_output_tokens,
+            }
+        )
+        if cache_parts is not None:
+            cache_key = stable_hash({"feature": feature, "model": model, "parts": cache_parts})
+            cached = self.store.read_cache(cache_key)
+            if cached:
+                total_tokens = int(cached["input_tokens"] or 0) + int(cached["output_tokens"] or 0)
+                self.store.log_event(
+                    usage_event(
+                        user=user,
+                        feature=feature,
+                        model=model,
+                        purpose=purpose,
+                        input_tokens=0,
+                        output_tokens=0,
+                        estimated_cost=0.0,
+                        latency_ms=0,
+                        status="cache_hit",
+                        resume_id=resume_id,
+                        job_id=job_id,
+                        cache_hit=True,
+                    )
+                )
+                return AICompletionResult(
+                    content=str(cached["response_json"]),
+                    model=model,
+                    input_tokens=0,
+                    output_tokens=0,
+                    total_tokens=total_tokens,
+                    estimated_cost=0.0,
+                    latency_ms=0,
+                    cache_hit=True,
+                )
+
+        started = time.perf_counter()
+        try:
+            response = await self.client.responses.create(
+                model=model,
+                input=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": json.dumps(user_payload, ensure_ascii=True)},
+                ],
+                text={
+                    "format": {
+                        "type": "json_schema",
+                        "name": "resume_summary_generation",
+                        "schema": json_schema,
+                        "strict": True,
+                    }
+                },
+                max_output_tokens=max_output_tokens,
+                timeout=timeout_seconds,
+            )
+            latency_ms = round((time.perf_counter() - started) * 1000)
+            content = response_output_text(response)
+            usage = getattr(response, "usage", None)
+            input_tokens = int(getattr(usage, "input_tokens", 0) or estimate_tokens([system_prompt, user_payload]))
+            output_tokens = int(getattr(usage, "output_tokens", 0) or estimate_tokens(content))
+            cost = estimate_cost(model, input_tokens, output_tokens, self.pricing)
+            self.store.log_event(
+                usage_event(
+                    user=user,
+                    feature=feature,
+                    model=model,
+                    purpose=purpose,
+                    input_tokens=input_tokens,
+                    output_tokens=output_tokens,
+                    estimated_cost=cost,
+                    latency_ms=latency_ms,
+                    status="success",
+                    resume_id=resume_id,
+                    job_id=job_id,
+                    cache_hit=False,
+                )
+            )
+            if cache_key and content:
+                self.store.write_cache(
+                    cache_key=cache_key,
+                    feature=feature,
+                    model=model,
+                    request_hash=request_hash,
+                    response_json=content,
+                    input_tokens=input_tokens,
+                    output_tokens=output_tokens,
+                )
+            return AICompletionResult(
+                content=content,
+                model=model,
+                input_tokens=input_tokens,
+                output_tokens=output_tokens,
+                total_tokens=input_tokens + output_tokens,
+                estimated_cost=cost,
+                latency_ms=latency_ms,
+                cache_hit=False,
+            )
+        except Exception as exc:
+            latency_ms = round((time.perf_counter() - started) * 1000)
+            self.store.log_event(
+                usage_event(
+                    user=user,
+                    feature=feature,
+                    model=model,
+                    purpose=purpose,
+                    input_tokens=0,
+                    output_tokens=0,
+                    estimated_cost=0.0,
+                    latency_ms=latency_ms,
+                    status="error",
+                    resume_id=resume_id,
+                    job_id=job_id,
+                    cache_hit=False,
+                    error=str(exc)[:500],
+                )
+            )
+            raise
+
 
 def row_to_event(row: sqlite3.Row) -> dict[str, Any]:
     return {
@@ -503,6 +645,19 @@ def estimate_cost(model: str, input_tokens: int, output_tokens: int, pricing: di
 def estimate_tokens(value: Any) -> int:
     text = json.dumps(value, ensure_ascii=True) if not isinstance(value, str) else value
     return max(1, round(len(text) / 4))
+
+
+def response_output_text(response: Any) -> str:
+    output_text = getattr(response, "output_text", None)
+    if isinstance(output_text, str) and output_text.strip():
+        return output_text
+    chunks: list[str] = []
+    for item in getattr(response, "output", []) or []:
+        for content in getattr(item, "content", []) or []:
+            text = getattr(content, "text", None)
+            if isinstance(text, str):
+                chunks.append(text)
+    return "".join(chunks)
 
 
 def stable_hash(value: Any) -> str:

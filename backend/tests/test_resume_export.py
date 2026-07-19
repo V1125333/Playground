@@ -160,6 +160,37 @@ def record(resume: StructuredGeneratedResume | None = None) -> StructuredResumeR
     )
 
 
+def test_export_document_model_uses_structured_resume_header_visibility() -> None:
+    resume = structured_resume().model_copy(
+        update={
+            "resume_header": {
+                "fullName": "Venu Madhav Pendurthi",
+                "phone": "+12014436937",
+                "githubUrl": "https://github.com/venu",
+            },
+            "contact": ResumeContact(
+                email="hidden@example.com",
+                phone="+12014436937",
+                location="Hidden, CT",
+                linkedin="https://linkedin.com/in/hidden",
+                github="https://github.com/venu",
+                portfolio="https://hidden.example.com",
+            ),
+        }
+    )
+
+    model = build_document_model(
+        resume,
+        template=resolve_template("classic-ats"),
+        renderer_version=EXPORT_RENDERER_VERSION,
+    )
+
+    assert model.full_name == "Venu Madhav Pendurthi"
+    assert model.professional_title == ""
+    assert [item.label for item in model.contact_items] == ["Phone", "GitHub"]
+    assert [item.value for item in model.contact_items] == ["+12014436937", "https://github.com/venu"]
+
+
 def pdf_text(content: bytes) -> str:
     return "\n".join(page.extract_text() or "" for page in PdfReader(BytesIO(content)).pages)
 

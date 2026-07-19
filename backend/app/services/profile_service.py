@@ -5,11 +5,15 @@ import json
 import re
 import uuid
 from datetime import datetime, timezone
+from typing import TYPE_CHECKING
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.schemas.resume import CandidateProfile, CandidateProfileRecord
+
+if TYPE_CHECKING:
+    from app.models.candidate_profile import CandidateProfileModel
 
 
 DEFAULT_PROFILE_NAME = "Primary Profile"

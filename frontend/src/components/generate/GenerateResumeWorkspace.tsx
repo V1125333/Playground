@@ -42,6 +42,17 @@ import {
   saveResumeVersion,
   updateResume,
 } from "../../services/resumeService";
+import { buildGenerateResumeRequest } from "../../services/generateResumeRequest";
+
+const generationSettings = {
+  maximumPages: 2,
+  bulletsPerRecentRole: 5,
+  bulletsPerOlderRole: 4,
+  includeProjects: true,
+  includeCertifications: true,
+  includeUnmatchedKeywords: false,
+  writingStyle: "balanced",
+};
 
 const analysisStages = [
   "Reading the job description",
@@ -82,6 +93,7 @@ export function GenerateResumeWorkspace({
   const [experienceLevel, setExperienceLevel] = useState("Senior");
   const [analysis, setAnalysis] = useState<JobAnalysisResponse | null>(null);
   const [match, setMatch] = useState<ProfileMatchResponse | null>(null);
+  const [summaryIntelligence, setSummaryIntelligence] = useState<ProfileMatchResponse["summaryIntelligence"] | null>(null);
   const [currentResume, setCurrentResume] = useState<StructuredGeneratedResume | null>(null);
   const [currentRecord, setCurrentRecord] = useState<StructuredResumeRecord | null>(null);
   const [recentResumes, setRecentResumes] = useState<StructuredResumeRecord[]>([]);
@@ -96,20 +108,34 @@ export function GenerateResumeWorkspace({
   const [error, setError] = useState("");
   const [activeStage, setActiveStage] = useState("");
   const generationInFlight = useRef(false);
+  const analysisRequestSequence = useRef(0);
   const [loadKey, setLoadKey] = useState(0);
 
   const matchSummary = match?.matchSummary ?? (currentRecord?.profileMatchJson as unknown as ProfileMatchSummary | undefined);
+  const resumeIntelligencePackageId = match?.packageId ?? "";
   const allRequirements = useMemo(() => collectRequirements(matchSummary), [matchSummary]);
   const evidence = useMemo(() => collectEvidence(matchSummary), [matchSummary]);
   const isHistoricalVersion = Boolean(currentRecord?.parentResumeId);
   const canEdit = mode === "edit" && Boolean(currentResume) && !isHistoricalVersion;
   const profileReady = Boolean(profileRecord?.profileId && profileRecord.profileData?.name?.trim());
   const canAnalyze = profileReady && targetRole.trim().length > 0 && jobDescription.trim().length >= 20 && !isAnalyzing && !isGenerating;
-  const canGenerate = Boolean(canAnalyze && analysis && match && !generationInFlight.current);
+  const canGenerate = Boolean(
+    canAnalyze
+    && analysis
+    && match
+    && resumeIntelligencePackageId
+    && summaryIntelligence
+    && match.validationStatus !== "stale"
+    && summaryIntelligence.validationStatus !== "invalid"
+    && !generationInFlight.current,
+  );
   const localValidationWarnings = useMemo(
     () => editedContentWarnings(currentResume, evidence),
     [currentResume, evidence],
   );
+  const displayScore = currentResume
+    ? currentResume.matchScore ?? currentRecord?.matchScore ?? 0
+    : matchSummary?.overallMatchScore ?? 0;
 
   const saveCurrentResume = useCallback(
     async (resume: StructuredGeneratedResume) => {
@@ -176,9 +202,17 @@ export function GenerateResumeWorkspace({
     setJobDescription(record.jobDescription ?? "");
     setAnalysis(record.jobAnalysisJson as unknown as JobAnalysisResponse);
     setMatch({ matchSummary: record.profileMatchJson as unknown as ProfileMatchSummary, cacheHit: false, cacheVersion: "" });
+    setSummaryIntelligence(null);
     setValidation(null);
     setError("");
     setMode(record.parentResumeId ? "preview" : "edit");
+  };
+
+  const clearAnalysisPackage = () => {
+    analysisRequestSequence.current += 1;
+    setAnalysis(null);
+    setMatch(null);
+    setSummaryIntelligence(null);
   };
 
   const handleAnalyze = async () => {
@@ -189,22 +223,47 @@ export function GenerateResumeWorkspace({
     setIsAnalyzing(true);
     setError("");
     setActiveStage(analysisStages[0]);
+    const requestId = analysisRequestSequence.current + 1;
+    analysisRequestSequence.current = requestId;
+    const snapshot = {
+      profileId: profileRecord.profileId,
+      jobDescription: jobDescription.trim(),
+      targetRole: targetRole.trim(),
+      targetCompany: targetCompany.trim(),
+      experienceLevel,
+    };
+    const isCurrentRequest = () => (
+      analysisRequestSequence.current === requestId
+      && profileRecord?.profileId === snapshot.profileId
+      && jobDescription.trim() === snapshot.jobDescription
+      && targetRole.trim() === snapshot.targetRole
+      && targetCompany.trim() === snapshot.targetCompany
+      && experienceLevel === snapshot.experienceLevel
+    );
     try {
       const analyzed = await analyzeJob(authToken, {
-        job_description: jobDescription.trim(),
-        target_role: targetRole.trim(),
-        target_company: targetCompany.trim(),
-        level: experienceLevel,
+        job_description: snapshot.jobDescription,
+        target_role: snapshot.targetRole,
+        target_company: snapshot.targetCompany,
+        level: snapshot.experienceLevel,
       });
+      if (!isCurrentRequest()) return;
       setActiveStage(analysisStages[3]);
       const matched = await matchProfile(authToken, {
-        profileId: profileRecord.profileId,
+        profileId: snapshot.profileId,
         jobAnalysis: analyzed,
+        jobDescription: snapshot.jobDescription,
+        targetRole: snapshot.targetRole,
+        targetCompany: snapshot.targetCompany,
+        level: snapshot.experienceLevel,
       });
+      if (!isCurrentRequest()) return;
       setAnalysis(analyzed);
       setMatch(matched);
+      setSummaryIntelligence(matched.summaryIntelligence ?? null);
       setActiveStage(analysisStages[5]);
     } catch (analyzeError) {
+      if (!isCurrentRequest()) return;
       setError(analyzeError instanceof Error ? analyzeError.message : "Job analysis failed.");
       setActiveStage("Analysis failed");
     } finally {
@@ -220,32 +279,25 @@ export function GenerateResumeWorkspace({
     setActiveStage(generationStages[0]);
     try {
       const stageTimer = startStageTicker(generationStages, setActiveStage);
-      const generated = await generateResume(authToken, {
-        profileId: profileRecord.profileId,
-        job_description: jobDescription.trim(),
-        target_role: targetRole.trim(),
-        target_company: targetCompany.trim(),
-        level: experienceLevel,
+      const generated = await generateResume(authToken, buildGenerateResumeRequest({
+        profileRecord,
+        jobDescription,
+        targetRole,
+        targetCompany,
+        experienceLevel,
         jobAnalysis: analysis,
+        resumeIntelligencePackageId,
         templateId: "classic-ats",
-        generationSettings: {
-          maximumPages: 2,
-          bulletsPerRecentRole: 5,
-          bulletsPerOlderRole: 4,
-          includeProjects: true,
-          includeCertifications: true,
-          includeUnmatchedKeywords: false,
-          writingStyle: "balanced",
-        },
-      });
+        generationSettings,
+      }));
       window.clearInterval(stageTimer);
       setActiveStage(generationStages[generationStages.length - 1]);
-      if (!generated.structuredResume || !generated.persistedResumeId) {
+      if (!generated.structuredResume || !generated.resumeId) {
         throw new Error("Generation completed without a structured persisted resume.");
       }
       setCurrentResume(generated.structuredResume);
       setValidation(generated.validationResult ?? null);
-      const record = await getResume(authToken, generated.persistedResumeId);
+      const record = await getResume(authToken, generated.resumeId);
       setCurrentRecord(record);
       setRecentResumes((current) => [record, ...current.filter((item) => item.resumeId !== record.resumeId)]);
       navigate(`/generate/${record.resumeId}`, { replace: true });
@@ -343,10 +395,22 @@ export function GenerateResumeWorkspace({
         canGenerate={canGenerate}
         error={error}
         activeStage={activeStage}
-        onTargetRoleChange={setTargetRole}
-        onTargetCompanyChange={setTargetCompany}
-        onJobDescriptionChange={setJobDescription}
-        onExperienceLevelChange={setExperienceLevel}
+        onTargetRoleChange={(value) => {
+          setTargetRole(value);
+          clearAnalysisPackage();
+        }}
+        onTargetCompanyChange={(value) => {
+          setTargetCompany(value);
+          clearAnalysisPackage();
+        }}
+        onJobDescriptionChange={(value) => {
+          setJobDescription(value);
+          clearAnalysisPackage();
+        }}
+        onExperienceLevelChange={(value) => {
+          setExperienceLevel(value);
+          clearAnalysisPackage();
+        }}
         onAnalyze={handleAnalyze}
         onGenerate={handleGenerate}
         onClear={clearWorkspace}
@@ -359,7 +423,7 @@ export function GenerateResumeWorkspace({
           targetCompany={targetCompany}
           autosaveStatus={autosave.status}
           autosaveError={autosave.error}
-          matchScore={matchSummary?.overallMatchScore ?? currentResume?.matchScore ?? 0}
+          matchScore={displayScore}
           versions={versions}
           currentRecord={currentRecord}
           isHistorical={isHistoricalVersion}
@@ -397,8 +461,11 @@ export function GenerateResumeWorkspace({
       {insightsOpen && (
         <ResumeInsightsPanel
           matchSummary={matchSummary}
+          hasResume={Boolean(currentResume)}
+          resumeScore={currentResume?.matchScore ?? currentRecord?.matchScore ?? 0}
           analysis={analysis}
           validation={validation}
+          summaryIntelligence={summaryIntelligence}
           localWarnings={localValidationWarnings}
           versions={versions}
           recentResumes={recentResumes}
@@ -496,13 +563,14 @@ function JobDescriptionPanel(props: {
         <Button variant="secondary" onClick={props.onClear}>Clear</Button>
         <Button variant="outline" disabled={!props.canAnalyze} onClick={props.onAnalyze}>
           {props.isAnalyzing ? <Loader2 className="animate-spin" size={16} /> : <Sparkles size={16} />}
-          Analyze Job
+          Analyze & Match
         </Button>
         <Button className="bg-blue-600 hover:bg-blue-700" disabled={!props.canGenerate} onClick={props.onGenerate}>
           {props.isGenerating ? <Loader2 className="animate-spin" size={16} /> : <FileText size={16} />}
           Generate Resume
         </Button>
       </div>
+      <p className="text-xs text-slate-500">Analyze the job description and compare it with your saved profile.</p>
     </aside>
   );
 }
@@ -535,6 +603,7 @@ function WorkspaceHeader(props: {
       : props.autosaveStatus === "dirty"
         ? "Unsaved changes"
         : "Saved";
+  const scoreLabel = props.resume ? "Resume ATS" : "Profile match";
   return (
     <header className="generate-editor-header">
       <div className="min-w-0">
@@ -547,10 +616,12 @@ function WorkspaceHeader(props: {
         <p>{[props.targetCompany, props.targetRole].filter(Boolean).join(" · ") || "Paste a job description to start"}</p>
       </div>
       <div className="header-actions">
-        <Badge tone={props.autosaveStatus === "error" ? "red" : props.autosaveStatus === "dirty" ? "amber" : "green"}>
-          {saveText}
-        </Badge>
-        <Badge tone={props.matchScore >= 80 ? "green" : props.matchScore >= 60 ? "amber" : "neutral"}>Match {props.matchScore || 0}%</Badge>
+        {props.currentRecord && (
+          <Badge tone={props.autosaveStatus === "error" ? "red" : props.autosaveStatus === "dirty" ? "amber" : "green"}>
+            {saveText}
+          </Badge>
+        )}
+        <Badge tone={props.matchScore >= 80 ? "green" : props.matchScore >= 60 ? "amber" : "neutral"}>{scoreLabel} {props.matchScore || 0}%</Badge>
         <div className="inline-flex overflow-hidden rounded-md border border-slate-200 bg-white">
           <button className={cn("h-9 px-3 text-sm font-semibold", props.mode === "preview" && "bg-blue-600 text-white")} onClick={() => props.onModeChange("preview")}>Preview</button>
           <button className={cn("h-9 px-3 text-sm font-semibold", props.mode === "edit" && "bg-blue-600 text-white")} disabled={props.isHistorical} onClick={() => props.onModeChange("edit")}>Edit</button>
@@ -600,8 +671,11 @@ function WorkspaceHeader(props: {
 
 function ResumeInsightsPanel({
   matchSummary,
+  hasResume,
+  resumeScore,
   analysis,
   validation,
+  summaryIntelligence,
   localWarnings,
   versions,
   recentResumes,
@@ -609,8 +683,11 @@ function ResumeInsightsPanel({
   onOpenVersion,
 }: {
   matchSummary?: ProfileMatchSummary;
+  hasResume: boolean;
+  resumeScore: number;
   analysis: JobAnalysisResponse | null;
   validation: ResumeValidationResult | null;
+  summaryIntelligence?: ProfileMatchResponse["summaryIntelligence"] | null;
   localWarnings: string[];
   versions: StructuredResumeRecord[];
   recentResumes: StructuredResumeRecord[];
@@ -620,14 +697,22 @@ function ResumeInsightsPanel({
   const matched = matchSummary?.matchedRequirements ?? [];
   const adjacent = matchSummary?.partiallyMatchedRequirements ?? [];
   const missing = matchSummary?.unmatchedRequirements ?? [];
+  const displayedScore = hasResume ? resumeScore : matchSummary?.overallMatchScore ?? 0;
+  const scoreTitle = hasResume ? "Resume ATS Score" : "Profile Match";
+  const scoreSubtitle = hasResume ? "Generated resume ATS score" : "Profile-to-job match";
   return (
     <aside className="insights-panel">
       <section>
-        <h2>Match</h2>
+        <h2>{scoreTitle}</h2>
         <div className="score-card">
-          <strong>{matchSummary?.overallMatchScore ?? 0}%</strong>
-          <span>Overall match</span>
+          <strong>{displayedScore}%</strong>
+          <span>{scoreSubtitle}</span>
         </div>
+        {!hasResume && (
+          <p className="mt-2 text-xs leading-relaxed text-slate-500">
+            This score compares the job requirements with evidence in your saved profile. It is not the ATS score of a generated resume.
+          </p>
+        )}
         <div className="grid grid-cols-2 gap-2 text-xs">
           <Metric label="Core" value={matchSummary?.coreRequirementScore ?? 0} />
           <Metric label="Supporting" value={matchSummary?.supportingRequirementScore ?? 0} />
@@ -639,6 +724,15 @@ function ResumeInsightsPanel({
           <RequirementGroup title="Matched" items={matched} tone="green" statusText="Exact or normalized match" empty="No matched requirements yet." />
           <RequirementGroup title="Adjacent" items={adjacent} tone="amber" statusText="Transferable, not a direct match" empty="No transferable-only matches." />
           <RequirementGroup title="Missing" items={missing} tone="red" statusText="Not found in profile" empty="No missing requirements." />
+        </section>
+      )}
+      {!hasResume && summaryIntelligence?.summary && (
+        <section>
+          <h2>Summary Intelligence</h2>
+          <p className="text-xs leading-relaxed text-slate-600">{summaryIntelligence.summary}</p>
+          {summaryIntelligence.validationStatus === "fallback" && (
+            <p className="mt-2 text-xs text-amber-700">Fallback summary prepared. You can still generate the resume.</p>
+          )}
         </section>
       )}
       <section>

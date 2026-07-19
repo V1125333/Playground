@@ -115,7 +115,7 @@ def build_document_model(
         template_id=template.template_id,
         full_name=full_name,
         professional_title=derive_professional_title(resume_copy),
-        contact_items=contact_items(resume_copy.contact),
+        contact_items=contact_items_from_header(resume_copy.resume_header) if resume_copy.resume_header else contact_items(resume_copy.contact),
         sections=[section for section in sections if content_has_value(section.content)],
         export_metadata=metadata,
     )
@@ -212,11 +212,15 @@ def normalize_bullets(values: Any) -> list[BulletItem]:
 
 
 def derive_full_name(resume: StructuredGeneratedResume) -> str:
+    if resume.resume_header:
+        return resume.resume_header.get("fullName", "").strip()
     name = resume.resume_name.replace(f" - {resume.target_job_title}", "").strip()
     return name or "Resume"
 
 
 def derive_professional_title(resume: StructuredGeneratedResume) -> str:
+    if resume.resume_header:
+        return resume.resume_header.get("currentTitle", "").strip()
     for section in resume.sections:
         if section.type == "experience":
             entries = as_list(section.content)
@@ -233,6 +237,22 @@ def contact_items(contact: ResumeContact) -> list[ContactItem]:
         ("LinkedIn", contact.linkedin, contact.linkedin),
         ("GitHub", contact.github, contact.github),
         ("Portfolio", contact.portfolio, contact.portfolio),
+    ]
+    return [
+        ContactItem(label=label, value=value.strip(), url=safe_url(url))
+        for label, value, url in order
+        if value and value.strip()
+    ]
+
+
+def contact_items_from_header(header: dict[str, str]) -> list[ContactItem]:
+    order = [
+        ("Email", header.get("email", ""), f"mailto:{header.get('email', '')}" if header.get("email") else ""),
+        ("Phone", header.get("phone", ""), ""),
+        ("Location", header.get("location", ""), ""),
+        ("LinkedIn", header.get("linkedinUrl", ""), header.get("linkedinUrl", "")),
+        ("GitHub", header.get("githubUrl", ""), header.get("githubUrl", "")),
+        ("Portfolio", header.get("portfolioUrl", ""), header.get("portfolioUrl", "")),
     ]
     return [
         ContactItem(label=label, value=value.strip(), url=safe_url(url))

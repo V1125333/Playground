@@ -12,6 +12,7 @@ import {
   FileText,
   History,
   Mic,
+  Pencil,
   Play,
   Plus,
   UserRound,
@@ -19,10 +20,11 @@ import {
   Settings,
   Sparkles,
   GripVertical,
+  Trash2,
   WandSparkles,
   type LucideIcon,
 } from "lucide-react";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
 import { Navigate, NavLink, Route, Routes, useLocation, useNavigate } from "react-router-dom";
 import {
   Bar,
@@ -42,13 +44,37 @@ import jobyroIcon from "./assets/jobyro-icon-teal.png";
 import { ResumeDocument } from "./resume/ResumeDocument";
 import type {
   CandidateProfileRecord,
+  ExperienceMetric,
   GeneratedResume,
   GeneratedResumeResponse,
   JobAnalysisResponse,
   JobKeywordAnalysisItem,
+  SkillCategory,
 } from "./resume/types";
 import { createProfile, getPrimaryProfile, updateProfile } from "./services/profileService";
 import { generateResume as generateStructuredResume } from "./services/resumeService";
+import {
+  clean,
+  datePrecedes,
+  formatLocationDisplay,
+  migrateLegacyLocation,
+  parseProfileDate,
+  profileDateInputValue,
+  splitLines,
+  validateStructuredLocation,
+} from "./services/profileData";
+import {
+  SKILL_CATEGORY_REGISTRY,
+  approvedSkillCategoryDefinition,
+  categoryDuplicateWarnings,
+  categoryLabelIssueCount,
+  createApprovedSkillCategory,
+  hasCategoryPrefix,
+  normalizeSkillCategories,
+  normalizeSkillName,
+  repairCategoryLabelSkills,
+  splitSkillValues,
+} from "./services/skillsData";
 
 type ResumeStatus = "Draft" | "Applied" | "Interview" | "Offer" | "Rejected";
 
@@ -61,35 +87,75 @@ type ResumeRow = {
   created: string;
 };
 
-type CandidateProfileForm = {
+export type CandidateProfileForm = {
   firstName: string;
   lastName: string;
   title: string;
   email: string;
   phone: string;
-  location: string;
+  locationCity: string;
+  locationState: string;
+  locationCountry: string;
   linkedin: string;
   github: string;
   portfolio: string;
-  skills: string;
+  skills: SkillCategoryForm[];
   experience: WorkExperienceForm[];
+  projects: ProjectForm[];
   education: EducationForm[];
   certifications: CertificationForm[];
 };
 
 type SetProfile = React.Dispatch<React.SetStateAction<CandidateProfileForm>>;
 
-type WorkExperienceForm = {
+export type WorkExperienceForm = {
   id: string;
   company: string;
+  clientName: string;
   role: string;
-  location: string;
+  city: string;
+  state: string;
+  country: string;
   startDate: string;
   endDate: string;
-  impactMetrics: string;
+  isCurrentRole: boolean;
+  responsibilities: string;
+  achievements: string;
+  technologies: string;
+  metrics: MetricForm[];
+  legacyNotes: string;
+  migrationReviewRequired: boolean;
 };
 
-type EducationForm = {
+export type MetricForm = {
+  id: string;
+  label: string;
+  value: string;
+};
+
+export type ProjectForm = {
+  id: string;
+  name: string;
+  org: string;
+  link: string;
+  bullets: string;
+  technologies: string;
+  linkedExperienceIds: string[];
+};
+
+export type SkillCategoryForm = {
+  categoryId: string;
+  categoryName: string;
+  order: number;
+  items: string[];
+  pendingSkill: string;
+  pendingCategoryName?: string;
+  collapsed: boolean;
+  migrationReviewRequired: boolean;
+  legacyUnparsed?: string;
+};
+
+export type EducationForm = {
   id: string;
   degree: string;
   institution: string;
@@ -98,7 +164,7 @@ type EducationForm = {
   gpa: string;
 };
 
-type CertificationForm = {
+export type CertificationForm = {
   id: string;
   name: string;
   issuer: string;
@@ -153,22 +219,34 @@ const initialProfile: CandidateProfileForm = {
   title: "",
   email: "",
   phone: "",
-  location: "",
+  locationCity: "",
+  locationState: "",
+  locationCountry: "",
   linkedin: "",
   github: "",
   portfolio: "",
-  skills: "",
+  skills: [],
   experience: [
     {
       id: "exp-1",
       company: "",
+      clientName: "",
       role: "",
-      location: "",
+      city: "",
+      state: "",
+      country: "",
       startDate: "",
       endDate: "",
-      impactMetrics: "",
+      isCurrentRole: false,
+      responsibilities: "",
+      achievements: "",
+      technologies: "",
+      metrics: [],
+      legacyNotes: "",
+      migrationReviewRequired: false,
     },
   ],
+  projects: [],
   education: [
     {
       id: "edu-1",
@@ -234,12 +312,26 @@ function loadStoredProfile(): CandidateProfileForm {
     const stored = window.localStorage.getItem(PROFILE_STORAGE_KEY);
     if (!stored) return initialProfile;
     const parsed = JSON.parse(stored) as Partial<CandidateProfileForm>;
+    const legacyParsed = parsed as Partial<CandidateProfileForm> & { location?: string };
+    const candidateLocation = migrateLegacyLocation(
+      parsed.locationCity || parsed.locationCountry
+        ? { city: parsed.locationCity ?? "", state: parsed.locationState ?? "", country: parsed.locationCountry ?? "" }
+        : legacyParsed.location ?? "",
+    );
+    const migratedSkills = normalizeSkillCategoryForms((parsed as Partial<CandidateProfileForm> & { skills?: unknown }).skills);
     return {
       ...initialProfile,
       ...parsed,
+      skills: migratedSkills,
+      locationCity: candidateLocation.location.city,
+      locationState: candidateLocation.location.state ?? "",
+      locationCountry: candidateLocation.location.country,
       experience: parsed.experience?.length
         ? normalizeExperienceForms(parsed.experience as WorkExperienceForm[])
         : initialProfile.experience,
+      projects: parsed.projects?.length
+        ? normalizeProjectForms(parsed.projects as ProjectForm[])
+        : initialProfile.projects,
       education: parsed.education?.length
         ? parsed.education.map((item) => ({ ...initialProfile.education[0], ...item }))
         : initialProfile.education,
@@ -261,17 +353,99 @@ function hasProfileContent(profile: CandidateProfileForm) {
     profile.firstName.trim()
     || profile.lastName.trim()
     || profile.email.trim()
-    || profile.skills.trim()
+    || profile.skills.some((category) => category.categoryName.trim() || category.items.length)
     || profile.experience.some((item) => item.company.trim() || item.role.trim()),
   );
 }
 
-function normalizeExperienceForms(experience: WorkExperienceForm[]) {
-  return experience.map((item) => ({
-    ...initialProfile.experience[0],
-    ...item,
-    impactMetrics: item.impactMetrics ?? "",
+function normalizeSkillCategoryForms(value: unknown): SkillCategoryForm[] {
+  const migration = normalizeSkillCategories(value);
+  return migration.categories.map((category, index) => ({
+    categoryId: category.categoryId || `skill-category-${index + 1}`,
+    categoryName: category.categoryName || category.category,
+    order: Number.isInteger(category.order) ? Number(category.order) : index,
+    items: category.items,
+    pendingSkill: "",
+    pendingCategoryName: "",
+    collapsed: index !== 0,
+    migrationReviewRequired: Boolean(category.migrationReviewRequired || migration.requiresReview),
+    legacyUnparsed: category.legacyUnparsed ?? migration.legacyUnparsed,
   }));
+}
+
+function skillFormToProfileCategory(category: SkillCategoryForm): SkillCategory {
+  return {
+    category: category.categoryName.trim(),
+    categoryId: category.categoryId,
+    categoryName: category.categoryName.trim(),
+    order: category.order,
+    items: category.items.map(normalizeSkillName).filter(Boolean),
+    migrationReviewRequired: category.migrationReviewRequired,
+    legacyUnparsed: category.legacyUnparsed,
+  };
+}
+
+function normalizeExperienceForms(experience: WorkExperienceForm[]) {
+  return experience.map((item) => {
+    const legacy = item as WorkExperienceForm & { client_name?: string | null; location?: string; impactMetrics?: string };
+    const migratedLocation = migrateLegacyLocation(
+      item.city || item.country
+        ? { city: item.city, state: item.state, country: item.country }
+        : legacy.location ?? "",
+    );
+    const legacyNotes = clean([item.legacyNotes, legacy.impactMetrics].filter(Boolean).join("\n\n"));
+    return {
+      ...initialProfile.experience[0],
+      ...item,
+      clientName: getExperienceClientName(item, legacyNotes, legacy.client_name),
+      city: migratedLocation.location.city,
+      state: migratedLocation.location.state ?? "",
+      country: migratedLocation.location.country,
+      responsibilities: item.responsibilities ?? "",
+      achievements: item.achievements ?? "",
+      technologies: item.technologies ?? "",
+      metrics: (item.metrics ?? []).map((metric, metricIndex) => ({
+        ...metric,
+        id: metric.id || `metric-${metricIndex + 1}`,
+      })),
+      legacyNotes,
+      migrationReviewRequired: Boolean(item.migrationReviewRequired || migratedLocation.requiresReview || legacyNotes),
+    };
+  });
+}
+
+type ProjectFormInput = Partial<Omit<ProjectForm, "bullets" | "technologies">> & {
+  projectId?: string;
+  bullets?: string[] | string;
+  technologies?: string[] | string;
+  linked_experience_ids?: string[];
+};
+
+export function normalizeProjectForms(projects: ProjectFormInput[]): ProjectForm[] {
+  return projects.map((item, index) => {
+    return {
+      id: item.id || item.projectId || `project-${index + 1}`,
+      name: item.name ?? "",
+      org: item.org ?? "",
+      link: item.link ?? "",
+      bullets: Array.isArray(item.bullets) ? item.bullets.join("\n") : item.bullets ?? "",
+      technologies: Array.isArray(item.technologies) ? item.technologies.join(", ") : item.technologies ?? "",
+      linkedExperienceIds: dedupeStrings(item.linkedExperienceIds ?? item.linked_experience_ids ?? []),
+    };
+  });
+}
+
+function dedupeStrings(values: string[]) {
+  return Array.from(new Set(values.map((value) => value.trim()).filter(Boolean)));
+}
+
+function extractClientName(value: string) {
+  const match = value.match(/^\s*client\s*:\s*(.+)$/im);
+  return match?.[1] ? clean(match[1]) : "";
+}
+
+function getExperienceClientName(item: { clientName?: string | null }, legacyNotes = "", snakeCaseClientName?: string | null) {
+  return clean(item.clientName ?? snakeCaseClientName ?? extractClientName(legacyNotes) ?? "");
 }
 
 function loadStoredResumes(): ResumeRow[] {
@@ -308,7 +482,15 @@ function loadSidebarCollapsed() {
 export default function App() {
   const navigate = useNavigate();
   const [resumes, setResumes] = useState<ResumeRow[]>(() => loadStoredResumes());
-  const [profile, setProfile] = useState<CandidateProfileForm>(() => loadStoredProfile());
+  const [profile, setProfileState] = useState<CandidateProfileForm>(() => loadStoredProfile());
+  const profileRef = useRef(profile);
+  const setProfile: SetProfile = useCallback((action) => {
+    const next = typeof action === "function"
+      ? (action as (current: CandidateProfileForm) => CandidateProfileForm)(profileRef.current)
+      : action;
+    profileRef.current = next;
+    setProfileState(next);
+  }, []);
   const [profileRecord, setProfileRecord] = useState<CandidateProfileRecord | null>(null);
   const [profileLoadError, setProfileLoadError] = useState("");
   const [authToken, setAuthToken] = useState(() => window.localStorage.getItem(AUTH_TOKEN_KEY) ?? "");
@@ -396,7 +578,7 @@ export default function App() {
         id: `generated-${Date.now()}`,
         role: target?.role || generation.resume.title || "Generated resume",
         company: target?.company || primaryExperience?.company || "Target company",
-        ats: generation.atsScore,
+        ats: generation.atsAnalysis?.score ?? generation.atsScore,
         status: "Draft",
         created: new Date().toLocaleDateString("en-US", { day: "2-digit", month: "short", year: "numeric" }),
       };
@@ -447,6 +629,7 @@ export default function App() {
                 <ProfilePage
                   profile={profile}
                   setProfile={setProfile}
+                  getLatestProfile={() => profileRef.current}
                   authToken={authToken}
                   profileRecord={profileRecord}
                   setProfileRecord={setProfileRecord}
@@ -1029,7 +1212,11 @@ function GeneratePage({
       if (!current) return current;
       return {
         ...current,
-        suggestions: current.suggestions.filter((suggestion) => suggestion.text !== suggestionText),
+        atsAnalysis: current.atsAnalysis ? {
+          ...current.atsAnalysis,
+          suggestions: current.atsAnalysis.suggestions.filter((suggestion) => suggestion.text !== suggestionText),
+        } : current.atsAnalysis,
+        suggestions: (current.atsAnalysis?.suggestions ?? current.suggestions).filter((suggestion) => suggestion.text !== suggestionText),
       };
     });
   };
@@ -1047,14 +1234,20 @@ function GeneratePage({
         ? existingSkills
         : existingSkills.map((group, index) => index === 0 ? { ...group, items: [...group.items, keyword] } : group);
 
+      const nextScore = Math.min(100, (current.atsAnalysis?.score ?? current.atsScore) + 2);
+      const nextBreakdown = {
+        ...(current.atsAnalysis?.breakdown ?? current.breakdown),
+        keywordMatch: Math.min(100, (current.atsAnalysis?.breakdown.keywordMatch ?? current.breakdown.keywordMatch) + 5),
+        matchedKeywords: Array.from(new Set([...(current.atsAnalysis?.breakdown.matchedKeywords ?? current.breakdown.matchedKeywords), keyword])),
+        missingKeywords: (current.atsAnalysis?.breakdown.missingKeywords ?? current.breakdown.missingKeywords).filter((item) => item !== keyword),
+      };
       return {
         ...current,
-        atsScore: Math.min(100, current.atsScore + 2),
+        atsAnalysis: current.atsAnalysis ? { ...current.atsAnalysis, score: nextScore, breakdown: nextBreakdown } : current.atsAnalysis,
+        atsScore: nextScore,
         breakdown: {
           ...current.breakdown,
-          keywordMatch: Math.min(100, current.breakdown.keywordMatch + 5),
-          matchedKeywords: Array.from(new Set([...current.breakdown.matchedKeywords, keyword])),
-          missingKeywords: current.breakdown.missingKeywords.filter((item) => item !== keyword),
+          ...nextBreakdown,
         },
         resume: {
           ...current.resume,
@@ -1065,7 +1258,11 @@ function GeneratePage({
   };
 
   const applyAllSuggestions = () => {
-    setGeneration((current) => current ? { ...current, suggestions: [] } : current);
+    setGeneration((current) => current ? {
+      ...current,
+      atsAnalysis: current.atsAnalysis ? { ...current.atsAnalysis, suggestions: [] } : current.atsAnalysis,
+      suggestions: [],
+    } : current);
   };
 
   const downloadResume = async (format: "pdf" | "docx") => {
@@ -1274,7 +1471,7 @@ function GeneratePage({
           <>
             <AtsCard generation={generation} onApplyKeyword={applyMissingKeyword} />
             <ResumeAiMetricsCard generation={generation} />
-            <SuggestionsCard suggestions={generation.suggestions} onApply={applySuggestion} onApplyAll={applyAllSuggestions} />
+            <SuggestionsCard suggestions={generation.atsAnalysis?.suggestions ?? generation.suggestions} onApply={applySuggestion} onApplyAll={applyAllSuggestions} />
             <ResumePreview resume={generation.resume} editable={mode === "edit"} onResumeChange={updateGeneratedResume} />
           </>
         )}
@@ -1454,6 +1651,7 @@ function TempPasswordPage({ token }: { token: string }) {
 function ProfilePage({
   profile,
   setProfile,
+  getLatestProfile,
   authToken,
   profileRecord,
   setProfileRecord,
@@ -1461,6 +1659,7 @@ function ProfilePage({
 }: {
   profile: CandidateProfileForm;
   setProfile: SetProfile;
+  getLatestProfile: () => CandidateProfileForm;
   authToken: string;
   profileRecord: CandidateProfileRecord | null;
   setProfileRecord: React.Dispatch<React.SetStateAction<CandidateProfileRecord | null>>;
@@ -1473,7 +1672,8 @@ function ProfilePage({
   const [profileErrors, setProfileErrors] = useState<string[]>([]);
 
   const saveProfile = async () => {
-    const errors = validateProfile(profile);
+    const profileToSave = getLatestProfile();
+    const errors = validateProfile(profileToSave);
     if (errors.length > 0) {
       setProfileErrors(errors);
       setSavedAt(null);
@@ -1483,7 +1683,7 @@ function ProfilePage({
 
     setProfileErrors([]);
     try {
-      const payload = buildCandidateProfile(profile);
+      const payload = buildCandidateProfile(profileToSave);
       const record = profileRecord
         ? await updateProfile(authToken, profileRecord.profileId, payload, profileRecord.profileVersion)
         : await createProfile(authToken, payload);
@@ -1526,6 +1726,7 @@ function ProfilePage({
         ...initialProfile,
         ...extracted,
         experience: normalizeExperienceForms(extracted.experience?.length ? extracted.experience : initialProfile.experience),
+        projects: normalizeProjectForms(extracted.projects?.length ? extracted.projects : initialProfile.projects),
         education: extracted.education?.length ? extracted.education : initialProfile.education,
         certifications: extracted.certifications?.length ? extracted.certifications : initialProfile.certifications,
       };
@@ -1610,6 +1811,22 @@ function ProfilePage({
         )}
         <CandidateProfilePanel profile={profile} setProfile={setProfile} variant="page" disabled={!isEditing} />
       </Card>
+      <div className="fixed bottom-5 left-1/2 z-50 flex w-[calc(100vw-2rem)] max-w-[640px] -translate-x-1/2 items-center justify-between gap-3 rounded-md border border-slate-200 bg-white/95 p-3 shadow-xl backdrop-blur">
+        <div className="min-w-0">
+          <p className="text-sm font-semibold text-slate-900">{isEditing ? "Profile changes are editable" : "Profile is saved"}</p>
+          <p className="hidden text-xs text-slate-500 sm:block">{isEditing ? "Save from anywhere on this page." : "Click Edit profile to make changes."}</p>
+        </div>
+        <div className="flex shrink-0 items-center gap-2">
+          <Button variant="secondary" onClick={() => setIsEditing(true)} disabled={isEditing}>
+            <Pencil size={17} />
+            Edit profile
+          </Button>
+          <Button className="bg-[#0f7891] hover:bg-[#09677d]" onClick={saveProfile} disabled={!isEditing}>
+            <Check size={17} />
+            Save changes
+          </Button>
+        </div>
+      </div>
     </PageFrame>
   );
 }
@@ -1627,7 +1844,7 @@ function CandidateProfilePanel({
 }) {
   const [draggedExperienceId, setDraggedExperienceId] = useState<string | null>(null);
 
-  const updateField = (field: keyof Omit<CandidateProfileForm, "experience" | "education" | "certifications">, value: string) => {
+  const updateField = (field: keyof Omit<CandidateProfileForm, "experience" | "projects" | "education" | "certifications">, value: string) => {
     setProfile((current) => {
       const next = { ...current, [field]: value };
       saveStoredProfile(next);
@@ -1635,7 +1852,7 @@ function CandidateProfilePanel({
     });
   };
 
-  const updateExperience = (id: string, field: keyof Omit<WorkExperienceForm, "id">, value: string) => {
+  const updateExperience = <K extends keyof Omit<WorkExperienceForm, "id">>(id: string, field: K, value: WorkExperienceForm[K]) => {
     setProfile((current) => {
       const next = {
         ...current,
@@ -1655,11 +1872,20 @@ function CandidateProfilePanel({
           {
             id: `exp-${Date.now()}`,
             company: "",
+            clientName: "",
             role: "",
-            location: "",
+            city: "",
+            state: "",
+            country: "",
             startDate: "",
             endDate: "",
-            impactMetrics: "",
+            isCurrentRole: false,
+            responsibilities: "",
+            achievements: "",
+            technologies: "",
+            metrics: [],
+            legacyNotes: "",
+            migrationReviewRequired: false,
           },
         ],
       };
@@ -1675,6 +1901,10 @@ function CandidateProfilePanel({
         experience: current.experience.length === 1
           ? current.experience
           : current.experience.filter((item) => item.id !== id),
+        projects: current.projects.map((project) => ({
+          ...project,
+          linkedExperienceIds: project.linkedExperienceIds.filter((experienceId) => experienceId !== id),
+        })),
       };
       saveStoredProfile(next);
       return next;
@@ -1714,6 +1944,246 @@ function CandidateProfilePanel({
     });
     setDraggedExperienceId(null);
   };
+
+  const updateExperienceMetric = (experienceId: string, metricId: string, field: keyof Omit<MetricForm, "id">, value: string) => {
+    setProfile((current) => {
+      const next = {
+        ...current,
+        experience: current.experience.map((item) => item.id === experienceId
+          ? {
+              ...item,
+              metrics: item.metrics.map((metric) => metric.id === metricId ? { ...metric, [field]: value } : metric),
+            }
+          : item),
+      };
+      saveStoredProfile(next);
+      return next;
+    });
+  };
+
+  const addExperienceMetric = (experienceId: string) => {
+    setProfile((current) => {
+      const next = {
+        ...current,
+        experience: current.experience.map((item) => item.id === experienceId
+          ? { ...item, metrics: [...item.metrics, { id: `metric-${Date.now()}`, label: "", value: "" }] }
+          : item),
+      };
+      saveStoredProfile(next);
+      return next;
+    });
+  };
+
+  const removeExperienceMetric = (experienceId: string, metricId: string) => {
+    setProfile((current) => {
+      const next = {
+        ...current,
+        experience: current.experience.map((item) => item.id === experienceId
+          ? { ...item, metrics: item.metrics.filter((metric) => metric.id !== metricId) }
+          : item),
+      };
+      saveStoredProfile(next);
+      return next;
+    });
+  };
+
+  const updateProject = <K extends keyof Omit<ProjectForm, "id">>(id: string, field: K, value: ProjectForm[K]) => {
+    setProfile((current) => {
+      const next = {
+        ...current,
+        projects: current.projects.map((item) => (item.id === id ? { ...item, [field]: value } : item)),
+      };
+      saveStoredProfile(next);
+      return next;
+    });
+  };
+
+  const addProject = () => {
+    setProfile((current) => {
+      const next = {
+        ...current,
+        projects: [
+          ...current.projects,
+          {
+            id: `project-${Date.now()}`,
+            name: "",
+            org: "",
+            link: "",
+            bullets: "",
+            technologies: "",
+            linkedExperienceIds: [],
+          },
+        ],
+      };
+      saveStoredProfile(next);
+      return next;
+    });
+  };
+
+  const removeProject = (id: string) => {
+    setProfile((current) => {
+      const next = {
+        ...current,
+        projects: current.projects.filter((item) => item.id !== id),
+      };
+      saveStoredProfile(next);
+      return next;
+    });
+  };
+
+  const toggleProjectExperienceLink = (projectId: string, experienceId: string) => {
+    setProfile((current) => {
+      const next = {
+        ...current,
+        projects: current.projects.map((project) => {
+          if (project.id !== projectId) return project;
+          const exists = project.linkedExperienceIds.includes(experienceId);
+          return {
+            ...project,
+            linkedExperienceIds: exists
+              ? project.linkedExperienceIds.filter((id) => id !== experienceId)
+              : [...project.linkedExperienceIds, experienceId],
+          };
+        }),
+      };
+      saveStoredProfile(next);
+      return next;
+    });
+  };
+
+  const updateSkillCategory = <K extends keyof SkillCategoryForm>(categoryId: string, field: K, value: SkillCategoryForm[K]) => {
+    setProfile((current) => {
+      const next = {
+        ...current,
+        skills: current.skills.map((category) => category.categoryId === categoryId ? { ...category, [field]: value } : category),
+      };
+      saveStoredProfile(next);
+      return next;
+    });
+  };
+
+  const addSkillCategory = (categoryId: string) => {
+    const definition = approvedSkillCategoryDefinition(categoryId);
+    if (!definition) return;
+    setProfile((current) => {
+      if (current.skills.some((item) => item.categoryId === definition.categoryId || item.categoryName.toLowerCase() === definition.categoryName.toLowerCase())) {
+        return current;
+      }
+      const category = createApprovedSkillCategory(definition.categoryId, current.skills.length);
+      const next = {
+        ...current,
+        skills: [
+          ...current.skills,
+          {
+            categoryId: definition.categoryId,
+            categoryName: definition.categoryName,
+            order: current.skills.length,
+            items: [],
+            pendingSkill: "",
+            pendingCategoryName: "",
+            collapsed: false,
+            migrationReviewRequired: false,
+          },
+        ],
+      };
+      saveStoredProfile(next);
+      return next;
+    });
+  };
+
+  const removeSkillCategory = (categoryId: string) => {
+    setProfile((current) => {
+      const next = {
+        ...current,
+        skills: current.skills.filter((category) => category.categoryId !== categoryId).map((category, index) => ({ ...category, order: index })),
+      };
+      saveStoredProfile(next);
+      return next;
+    });
+  };
+
+  const moveSkillCategory = (categoryId: string, direction: -1 | 1) => {
+    setProfile((current) => {
+      const index = current.skills.findIndex((category) => category.categoryId === categoryId);
+      const targetIndex = index + direction;
+      if (index < 0 || targetIndex < 0 || targetIndex >= current.skills.length) return current;
+      const skills = [...current.skills];
+      const [category] = skills.splice(index, 1);
+      skills.splice(targetIndex, 0, category);
+      const next = { ...current, skills: skills.map((item, itemIndex) => ({ ...item, order: itemIndex })) };
+      saveStoredProfile(next);
+      return next;
+    });
+  };
+
+  const addSkillToCategory = (categoryId: string, rawValue?: string) => {
+    setProfile((current) => {
+      const next = {
+        ...current,
+        skills: current.skills.map((category) => {
+          if (category.categoryId !== categoryId) return category;
+          const values = splitSkillValues(rawValue ?? category.pendingSkill);
+          const existing = new Set(category.items.map((item) => item.toLowerCase()));
+          const additions = values.filter((item) => !hasCategoryPrefix(item) && !existing.has(item.toLowerCase()));
+          return {
+            ...category,
+            items: [...category.items, ...additions],
+            pendingSkill: "",
+            migrationReviewRequired: category.migrationReviewRequired || values.some((item) => hasCategoryPrefix(item)),
+          };
+        }),
+      };
+      saveStoredProfile(next);
+      return next;
+    });
+  };
+
+  const updateSkillInCategory = (categoryId: string, previousSkill: string, nextSkill: string) => {
+    const normalizedNext = normalizeSkillName(nextSkill);
+    if (!normalizedNext) return;
+    setProfile((current) => {
+      const next = {
+        ...current,
+        skills: current.skills.map((category) => {
+          if (category.categoryId !== categoryId) return category;
+          const existing = new Set(category.items.filter((item) => item !== previousSkill).map((item) => item.toLowerCase()));
+          if (existing.has(normalizedNext.toLowerCase())) return category;
+          return {
+            ...category,
+            items: category.items.map((item) => item === previousSkill ? normalizedNext : item),
+            migrationReviewRequired: category.migrationReviewRequired || hasCategoryPrefix(normalizedNext),
+          };
+        }),
+      };
+      saveStoredProfile(next);
+      return next;
+    });
+  };
+
+  const removeSkillFromCategory = (categoryId: string, skill: string) => {
+    setProfile((current) => {
+      const next = {
+        ...current,
+        skills: current.skills.map((category) => category.categoryId === categoryId
+          ? { ...category, items: category.items.filter((item) => item !== skill) }
+          : category),
+      };
+      saveStoredProfile(next);
+      return next;
+    });
+  };
+
+  const fixMigratedSkillLabels = () => {
+    setProfile((current) => {
+      const repaired = repairCategoryLabelSkills(current.skills.map(skillFormToProfileCategory));
+      const next = { ...current, skills: normalizeSkillCategoryForms(repaired) };
+      saveStoredProfile(next);
+      return next;
+    });
+  };
+
+  const duplicateSkillWarnings = categoryDuplicateWarnings(profile.skills.map(skillFormToProfileCategory));
+  const migratedSkillLabelCount = categoryLabelIssueCount(profile.skills.map(skillFormToProfileCategory));
 
   const updateEducation = (id: string, field: keyof Omit<EducationForm, "id">, value: string) => {
     setProfile((current) => {
@@ -1789,6 +2259,17 @@ function CandidateProfilePanel({
     });
   };
 
+  const experienceLinkOptions = profile.experience
+    .filter((experience) => experience.id && (experience.company.trim() || experience.role.trim()))
+    .map((experience, index) => ({
+      id: experience.id,
+      label: [
+        experience.role.trim() || `Work experience ${index + 1}`,
+        experience.company.trim(),
+        experience.clientName.trim() ? `(${experience.clientName.trim()})` : "",
+      ].filter(Boolean).join(" - "),
+    }));
+
   return (
     <div>
       <div className="mb-4">
@@ -1807,8 +2288,14 @@ function CandidateProfilePanel({
         <Field label="Current title">
           <Input value={profile.title} onChange={(event) => updateField("title", event.target.value)} className="h-11 rounded-none text-base" />
         </Field>
-        <Field label="Location">
-          <Input value={profile.location} onChange={(event) => updateField("location", event.target.value)} className="h-11 rounded-none text-base" />
+        <Field label="City">
+          <Input value={profile.locationCity} onChange={(event) => updateField("locationCity", event.target.value)} className="h-11 rounded-none text-base" />
+        </Field>
+        <Field label="State / Province">
+          <Input value={profile.locationState} onChange={(event) => updateField("locationState", event.target.value)} className="h-11 rounded-none text-base" />
+        </Field>
+        <Field label="Country">
+          <Input value={profile.locationCountry} onChange={(event) => updateField("locationCountry", event.target.value)} className="h-11 rounded-none text-base" />
         </Field>
         <Field label="Email">
           <Input value={profile.email} onChange={(event) => updateField("email", event.target.value)} className="h-11 rounded-none text-base" type="email" />
@@ -1827,15 +2314,20 @@ function CandidateProfilePanel({
         </Field>
       </div>
 
-      <label className="mt-4 block text-sm font-semibold text-slate-800">
-        Skills
-        <textarea
-          className="mt-2 h-24 w-full resize-none rounded-none border border-slate-300 bg-white px-3 py-2 text-base outline-none focus:border-[#0f7891] focus:ring-4 focus:ring-[#0f7891]/10"
-          placeholder="React, TypeScript, GraphQL, WCAG, CI/CD"
-          value={profile.skills}
-          onChange={(event) => updateField("skills", event.target.value)}
-        />
-      </label>
+      <SkillsCategoryEditor
+        categories={profile.skills}
+        duplicateWarnings={duplicateSkillWarnings}
+        migratedSkillLabelCount={migratedSkillLabelCount}
+        disabled={disabled}
+        onFixMigratedSkillLabels={fixMigratedSkillLabels}
+        onAddCategory={addSkillCategory}
+        onMoveCategory={moveSkillCategory}
+        onRemoveCategory={removeSkillCategory}
+        onUpdateCategory={updateSkillCategory}
+        onAddSkill={addSkillToCategory}
+        onUpdateSkill={updateSkillInCategory}
+        onRemoveSkill={removeSkillFromCategory}
+      />
 
       <div className="mt-5 space-y-4">
         {profile.experience.map((experience, index) => (
@@ -1908,29 +2400,209 @@ function CandidateProfilePanel({
               <Field label="Company">
                 <Input value={experience.company} onChange={(event) => updateExperience(experience.id, "company", event.target.value)} className="h-11 rounded-none text-base" />
               </Field>
+              <Field label="Client">
+                <Input value={experience.clientName} onChange={(event) => updateExperience(experience.id, "clientName", event.target.value)} className="h-11 rounded-none text-base" placeholder="Optional client name" />
+              </Field>
               <Field label="Role">
                 <Input value={experience.role} onChange={(event) => updateExperience(experience.id, "role", event.target.value)} className="h-11 rounded-none text-base" />
               </Field>
-              <Field label="Location">
-                <Input value={experience.location} onChange={(event) => updateExperience(experience.id, "location", event.target.value)} className="h-11 rounded-none text-base" />
+              <Field label="City">
+                <Input value={experience.city} onChange={(event) => updateExperience(experience.id, "city", event.target.value)} className="h-11 rounded-none text-base" />
+              </Field>
+              <Field label="State / Province">
+                <Input value={experience.state} onChange={(event) => updateExperience(experience.id, "state", event.target.value)} className="h-11 rounded-none text-base" />
+              </Field>
+              <Field label="Country">
+                <Input value={experience.country} onChange={(event) => updateExperience(experience.id, "country", event.target.value)} className="h-11 rounded-none text-base" />
               </Field>
               <Field label="Start date">
-                <Input value={experience.startDate} onChange={(event) => updateExperience(experience.id, "startDate", event.target.value)} className="h-11 rounded-none text-base" placeholder="YYYY-MM" />
+                <Input type="month" value={experience.startDate} onChange={(event) => updateExperience(experience.id, "startDate", event.target.value)} className="h-11 rounded-none text-base" placeholder="YYYY-MM" />
               </Field>
               <Field label="End date">
-                <Input value={experience.endDate} onChange={(event) => updateExperience(experience.id, "endDate", event.target.value)} className="h-11 rounded-none text-base" placeholder="YYYY-MM or Present" />
+                <Input type="month" value={experience.endDate} onChange={(event) => updateExperience(experience.id, "endDate", event.target.value)} className="h-11 rounded-none text-base" placeholder="YYYY-MM" disabled={disabled || experience.isCurrentRole} />
+              </Field>
+            </div>
+            <label className="mt-4 inline-flex items-center gap-2 text-sm font-semibold text-slate-800">
+              <input
+                type="checkbox"
+                checked={experience.isCurrentRole}
+                onChange={(event) => {
+                  updateExperience(experience.id, "isCurrentRole", event.target.checked);
+                  if (event.target.checked) updateExperience(experience.id, "endDate", "");
+                }}
+                disabled={disabled}
+              />
+              Current role / Present
+            </label>
+            <div className="mt-4 grid gap-4 xl:grid-cols-3">
+              <label className="block text-sm font-semibold">
+                Responsibilities
+                <textarea
+                  className="mt-2 h-24 w-full resize-none rounded-none border border-slate-300 bg-white px-3 py-2 text-base outline-none focus:border-[#0f7891] focus:ring-4 focus:ring-[#0f7891]/10 disabled:bg-slate-100"
+                  value={experience.responsibilities}
+                  onChange={(event) => updateExperience(experience.id, "responsibilities", event.target.value)}
+                  disabled={disabled}
+                  placeholder="One responsibility per line"
+                />
+              </label>
+              <label className="block text-sm font-semibold">
+                Achievements
+                <textarea
+                  className="mt-2 h-24 w-full resize-none rounded-none border border-slate-300 bg-white px-3 py-2 text-base outline-none focus:border-[#0f7891] focus:ring-4 focus:ring-[#0f7891]/10 disabled:bg-slate-100"
+                  value={experience.achievements}
+                  onChange={(event) => updateExperience(experience.id, "achievements", event.target.value)}
+                  disabled={disabled}
+                  placeholder="One factual achievement per line"
+                />
+              </label>
+              <label className="block text-sm font-semibold">
+                Technologies
+                <textarea
+                  className="mt-2 h-24 w-full resize-none rounded-none border border-slate-300 bg-white px-3 py-2 text-base outline-none focus:border-[#0f7891] focus:ring-4 focus:ring-[#0f7891]/10 disabled:bg-slate-100"
+                  value={experience.technologies}
+                  onChange={(event) => updateExperience(experience.id, "technologies", event.target.value)}
+                  disabled={disabled}
+                  placeholder="C#, ASP.NET Core, SQL Server"
+                />
+              </label>
+            </div>
+            <div className="mt-4 rounded-md border border-slate-200 bg-white p-3">
+              <div className="mb-3 flex items-center justify-between">
+                <p className="text-sm font-semibold text-slate-800">Metrics</p>
+                <button
+                  type="button"
+                  className="inline-flex h-8 items-center gap-1 rounded-md border border-slate-200 px-3 text-sm font-medium shadow-sm hover:bg-slate-50 disabled:opacity-40"
+                  onClick={() => addExperienceMetric(experience.id)}
+                  disabled={disabled}
+                >
+                  <Plus size={14} /> Metric
+                </button>
+              </div>
+              {experience.metrics.length === 0 && <p className="text-sm text-slate-500">No metrics added.</p>}
+              <div className="space-y-2">
+                {experience.metrics.map((metric) => (
+                  <div key={metric.id} className="grid gap-2 xl:grid-cols-[1fr_160px_40px]">
+                    <Input value={metric.label} onChange={(event) => updateExperienceMetric(experience.id, metric.id, "label", event.target.value)} placeholder="Metric label" className="h-10 rounded-none" />
+                    <Input value={metric.value} onChange={(event) => updateExperienceMetric(experience.id, metric.id, "value", event.target.value)} placeholder="Value" className="h-10 rounded-none" />
+                    <button
+                      type="button"
+                      className="grid h-10 place-items-center rounded-md border border-slate-200 bg-white text-slate-700 shadow-sm hover:bg-slate-50 disabled:opacity-40"
+                      onClick={() => removeExperienceMetric(experience.id, metric.id)}
+                      disabled={disabled}
+                      aria-label="Remove metric"
+                    >
+                      -
+                    </button>
+                  </div>
+                ))}
+              </div>
+            </div>
+            {experience.legacyNotes && (
+              <label className="mt-4 block text-sm font-semibold">
+                Legacy notes needing review
+                <textarea
+                  className="mt-2 h-20 w-full resize-none rounded-none border border-amber-300 bg-amber-50 px-3 py-2 text-base outline-none disabled:bg-amber-50"
+                  value={experience.legacyNotes}
+                  onChange={(event) => updateExperience(experience.id, "legacyNotes", event.target.value)}
+                  disabled={disabled}
+                  placeholder="Legacy free-text preserved for review."
+                />
+              </label>
+            )}
+            {experience.migrationReviewRequired && (
+              <p className="mt-3 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-sm font-medium text-amber-800">
+                Review migrated legacy location or notes before relying on this experience as structured evidence.
+              </p>
+            )}
+          </div>
+        ))}
+      </div>
+
+      <div className="mt-6 space-y-4">
+        <div className="flex items-center justify-between">
+          <div>
+            <p className="text-sm font-bold uppercase tracking-wider text-slate-500">Projects</p>
+            <p className="mt-1 text-sm text-slate-500">
+              Link a project to work experience only when that project can support resume evidence for that role.
+            </p>
+          </div>
+          <button
+            className="inline-flex h-9 items-center gap-2 rounded-md border border-slate-200 bg-white px-3 text-sm font-medium shadow-sm hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-40"
+            type="button"
+            onClick={addProject}
+            disabled={disabled}
+          >
+            <Plus size={16} /> Project
+          </button>
+        </div>
+        {profile.projects.length === 0 && (
+          <div className="rounded-md border border-dashed border-slate-300 bg-slate-50 px-4 py-5 text-sm text-slate-500">
+            No projects added. Unmapped projects can still appear in the Projects section later, but they will not support employment bullets.
+          </div>
+        )}
+        {profile.projects.map((project, index) => (
+          <div key={project.id} className="rounded-md border border-slate-200 bg-slate-50 p-4">
+            <div className="mb-3 flex items-center justify-between">
+              <p className="font-semibold">Project {index + 1}</p>
+              <button
+                className="grid h-8 w-8 place-items-center rounded-md border border-slate-200 bg-white text-slate-700 shadow-sm hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-40"
+                type="button"
+                aria-label="Remove project"
+                title="Remove project"
+                onClick={() => removeProject(project.id)}
+                disabled={disabled}
+              >
+                <span className="text-xl leading-none">-</span>
+              </button>
+            </div>
+            <div className="grid gap-4 2xl:grid-cols-2">
+              <Field label="Project name">
+                <Input value={project.name} onChange={(event) => updateProject(project.id, "name", event.target.value)} className="h-11 rounded-none text-base" />
+              </Field>
+              <Field label="Organization">
+                <Input value={project.org} onChange={(event) => updateProject(project.id, "org", event.target.value)} className="h-11 rounded-none text-base" />
+              </Field>
+              <Field label="Link">
+                <Input value={project.link} onChange={(event) => updateProject(project.id, "link", event.target.value)} className="h-11 rounded-none text-base" />
+              </Field>
+              <Field label="Technologies">
+                <Input value={project.technologies} onChange={(event) => updateProject(project.id, "technologies", event.target.value)} className="h-11 rounded-none text-base" placeholder="Python, Spark, Databricks" />
               </Field>
             </div>
             <label className="mt-4 block text-sm font-semibold">
-              Impact metrics
+              Project bullets
               <textarea
-                className="mt-2 h-20 w-full resize-none rounded-none border border-slate-300 bg-white px-3 py-2 text-base outline-none focus:border-[#0f7891] focus:ring-4 focus:ring-[#0f7891]/10 disabled:bg-slate-100"
-                value={experience.impactMetrics}
-                onChange={(event) => updateExperience(experience.id, "impactMetrics", event.target.value)}
+                className="mt-2 h-24 w-full resize-none rounded-none border border-slate-300 bg-white px-3 py-2 text-base outline-none focus:border-[#0f7891] focus:ring-4 focus:ring-[#0f7891]/10 disabled:bg-slate-100"
+                value={project.bullets}
+                onChange={(event) => updateProject(project.id, "bullets", event.target.value)}
                 disabled={disabled}
-                placeholder="Examples: supported 5 applications; reviewed 20 PRs/month; reduced defects by 15%; handled 30 tickets/month; delivered 8 releases"
+                placeholder="One project fact per line"
               />
             </label>
+            <div className="mt-4 rounded-md border border-slate-200 bg-white p-3">
+              <p className="text-sm font-semibold text-slate-800">Related Work Experience</p>
+              <p className="mt-1 text-xs text-slate-500">
+                Linking allows the resume generator to use this project as supporting evidence for the selected employment.
+              </p>
+              {experienceLinkOptions.length === 0 ? (
+                <p className="mt-3 text-sm text-slate-500">Add work experience before linking projects.</p>
+              ) : (
+                <div className="mt-3 grid gap-2 xl:grid-cols-2">
+                  {experienceLinkOptions.map((option) => (
+                    <label key={option.id} className="flex items-start gap-2 rounded-md border border-slate-200 px-3 py-2 text-sm">
+                      <input
+                        type="checkbox"
+                        className="mt-1"
+                        checked={project.linkedExperienceIds.includes(option.id)}
+                        onChange={() => toggleProjectExperienceLink(project.id, option.id)}
+                        disabled={disabled}
+                      />
+                      <span>{option.label}</span>
+                    </label>
+                  ))}
+                </div>
+              )}
+            </div>
           </div>
         ))}
       </div>
@@ -2034,39 +2706,473 @@ function CandidateProfilePanel({
   );
 }
 
-function buildCandidateProfile(profile: CandidateProfileForm): GeneratedResume {
+export function SkillsCategoryEditor({
+  categories,
+  duplicateWarnings,
+  migratedSkillLabelCount,
+  disabled,
+  onFixMigratedSkillLabels,
+  onAddCategory,
+  onMoveCategory,
+  onRemoveCategory,
+  onUpdateCategory,
+  onAddSkill,
+  onUpdateSkill,
+  onRemoveSkill,
+}: {
+  categories: SkillCategoryForm[];
+  duplicateWarnings: string[];
+  migratedSkillLabelCount: number;
+  disabled: boolean;
+  onFixMigratedSkillLabels: () => void;
+  onAddCategory: (categoryId: string) => void;
+  onMoveCategory: (categoryId: string, direction: -1 | 1) => void;
+  onRemoveCategory: (categoryId: string) => void;
+  onUpdateCategory: <K extends keyof SkillCategoryForm>(categoryId: string, field: K, value: SkillCategoryForm[K]) => void;
+  onAddSkill: (categoryId: string, rawValue?: string) => void;
+  onUpdateSkill: (categoryId: string, previousSkill: string, nextSkill: string) => void;
+  onRemoveSkill: (categoryId: string, skill: string) => void;
+}) {
+  const [isCreatingCategory, setIsCreatingCategory] = useState(false);
+  const [categorySearch, setCategorySearch] = useState("");
+  const [selectedCategoryId, setSelectedCategoryId] = useState("");
+  const [highlightedCategoryIndex, setHighlightedCategoryIndex] = useState(0);
+  const [addingSkillCategoryId, setAddingSkillCategoryId] = useState<string | null>(null);
+  const [editingSkillKey, setEditingSkillKey] = useState<string | null>(null);
+  const [editingSkillValue, setEditingSkillValue] = useState("");
+
+  const existingCategoryIds = useMemo(() => new Set(categories.map((category) => category.categoryId)), [categories]);
+  const availableCategories = useMemo(() => {
+    const query = categorySearch.trim().toLowerCase();
+    return SKILL_CATEGORY_REGISTRY
+      .filter((category) => !existingCategoryIds.has(category.categoryId))
+      .filter((category) => {
+        if (!query) return true;
+        return [
+          category.categoryName,
+          category.description,
+          category.group,
+          ...category.examples,
+        ].some((value) => value.toLowerCase().includes(query));
+      });
+  }, [categorySearch, existingCategoryIds]);
+  const selectedCategory = approvedSkillCategoryDefinition(selectedCategoryId);
+
+  const resetCategorySelector = () => {
+    setIsCreatingCategory(false);
+    setCategorySearch("");
+    setSelectedCategoryId("");
+    setHighlightedCategoryIndex(0);
+  };
+
+  const createCategory = () => {
+    if (!selectedCategory || existingCategoryIds.has(selectedCategory.categoryId)) return;
+    onAddCategory(selectedCategory.categoryId);
+    resetCategorySelector();
+  };
+
+  const selectCategory = (categoryId: string) => {
+    setSelectedCategoryId(categoryId);
+    const definition = approvedSkillCategoryDefinition(categoryId);
+    setCategorySearch(definition?.categoryName ?? "");
+  };
+
+  const groupedAvailableCategories = {
+    technical: availableCategories.filter((category) => category.group === "technical"),
+    professional: availableCategories.filter((category) => category.group === "professional"),
+  };
+
+  const highlightedCategory = availableCategories[Math.min(highlightedCategoryIndex, Math.max(availableCategories.length - 1, 0))];
+
+  useEffect(() => {
+    setHighlightedCategoryIndex(0);
+  }, [categorySearch]);
+
+  const onCategoryComboboxKeyDown = (event: KeyboardEvent<HTMLInputElement>) => {
+    if (event.key === "Escape") {
+      event.preventDefault();
+      resetCategorySelector();
+      return;
+    }
+    if (event.key === "ArrowDown") {
+      event.preventDefault();
+      setHighlightedCategoryIndex((index) => Math.min(index + 1, Math.max(availableCategories.length - 1, 0)));
+      return;
+    }
+    if (event.key === "ArrowUp") {
+      event.preventDefault();
+      setHighlightedCategoryIndex((index) => Math.max(index - 1, 0));
+      return;
+    }
+    if (event.key === "Enter") {
+      event.preventDefault();
+      if (highlightedCategory) {
+        selectCategory(highlightedCategory.categoryId);
+        return;
+      }
+      createCategory();
+    }
+  };
+
+  return (
+    <div className="mt-5">
+      <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
+        <div>
+          <p className="text-sm font-bold uppercase tracking-wider text-slate-500">Skills</p>
+          <p className="mt-1 text-sm text-slate-500">Manage your technical skills by category.</p>
+        </div>
+        <Button type="button" variant="secondary" onClick={() => {
+          setIsCreatingCategory(true);
+          setCategorySearch("");
+          setSelectedCategoryId("");
+          setHighlightedCategoryIndex(0);
+        }} disabled={disabled || SKILL_CATEGORY_REGISTRY.every((category) => existingCategoryIds.has(category.categoryId))}>
+          <Plus size={16} /> Add Category
+        </Button>
+      </div>
+      {isCreatingCategory && (
+        <div className="mb-3 max-w-3xl rounded-md border border-slate-200 bg-white p-4 shadow-sm">
+          <div className="grid gap-3">
+            <label className="text-sm font-semibold text-slate-800" htmlFor="skill-category-selector">
+              Category
+            </label>
+            <div className="relative">
+              <Input
+                id="skill-category-selector"
+                role="combobox"
+                aria-label="Search or select a skill category"
+                aria-controls="skill-category-options"
+                aria-expanded={isCreatingCategory}
+                aria-autocomplete="list"
+                aria-activedescendant={highlightedCategory ? `skill-category-option-${highlightedCategory.categoryId}` : undefined}
+                value={categorySearch}
+                placeholder="Search or select a category"
+                onChange={(event) => {
+                  setCategorySearch(event.target.value);
+                  setSelectedCategoryId("");
+                }}
+                onKeyDown={onCategoryComboboxKeyDown}
+                className="h-10 rounded-none"
+                autoFocus
+              />
+              <div
+                id="skill-category-options"
+                role="listbox"
+                aria-label="Approved skill categories"
+                className="mt-2 max-h-80 overflow-y-auto rounded-md border border-slate-200 bg-white shadow-sm"
+              >
+                {availableCategories.length === 0 && (
+                  <p className="px-3 py-3 text-sm text-slate-500">No available approved categories match your search.</p>
+                )}
+                {(["technical", "professional"] as const).map((group) => {
+                  const options = groupedAvailableCategories[group];
+                  if (!options.length) return null;
+                  return (
+                    <div key={group}>
+                      <p className="bg-slate-50 px-3 py-2 text-xs font-bold uppercase tracking-wider text-slate-500">
+                        {group === "technical" ? "Technical" : "Professional"}
+                      </p>
+                      {options.map((category) => {
+                        const globalIndex = availableCategories.findIndex((item) => item.categoryId === category.categoryId);
+                        const isHighlighted = globalIndex === highlightedCategoryIndex;
+                        const isSelected = selectedCategoryId === category.categoryId;
+                        return (
+                          <button
+                            key={category.categoryId}
+                            id={`skill-category-option-${category.categoryId}`}
+                            role="option"
+                            aria-selected={isSelected}
+                            type="button"
+                            className={cn(
+                              "block w-full border-t border-slate-100 px-3 py-2 text-left transition",
+                              isHighlighted && "bg-slate-50",
+                              isSelected && "bg-[#e6f4f8]",
+                            )}
+                            onMouseEnter={() => setHighlightedCategoryIndex(globalIndex)}
+                            onClick={() => selectCategory(category.categoryId)}
+                          >
+                            <span className="block text-sm font-semibold text-slate-900">{category.categoryName}</span>
+                            <span className="mt-0.5 block text-xs text-slate-500">{category.description}</span>
+                            <span className="mt-1 block text-xs text-slate-400">Examples: {category.examples.slice(0, 4).join(", ")}</span>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+            {selectedCategory && (
+              <p className="rounded-md bg-slate-50 px-3 py-2 text-sm text-slate-600">
+                {selectedCategory.description}
+              </p>
+            )}
+            <div className="flex flex-wrap gap-2">
+              <Button type="button" onClick={createCategory} disabled={!selectedCategory || existingCategoryIds.has(selectedCategory.categoryId)}>
+                Create Category
+              </Button>
+              <Button type="button" variant="secondary" onClick={resetCategorySelector}>
+                Cancel
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
+      {duplicateWarnings.length > 0 && (
+        <div className="mb-3 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800">
+          Duplicate skills across categories: {duplicateWarnings.join(", ")}. You can save, but choose the best category later.
+        </div>
+      )}
+      {migratedSkillLabelCount > 0 && (
+        <div className="mb-3 flex flex-wrap items-center justify-between gap-3 rounded-md border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
+          <span>We found {migratedSkillLabelCount} migrated skills that still contain category labels.</span>
+          <div className="flex items-center gap-2">
+            <Button type="button" size="sm" onClick={onFixMigratedSkillLabels} disabled={disabled}>
+              Fix Automatically
+            </Button>
+            <Button type="button" size="sm" variant="secondary" disabled={disabled}>
+              Review Manually
+            </Button>
+          </div>
+        </div>
+      )}
+      {categories.length === 0 && (
+        <div className="rounded-md border border-dashed border-slate-300 bg-white p-4 text-sm text-slate-500">
+          No skill categories yet.
+        </div>
+      )}
+      <div className="space-y-3">
+        {categories.map((category, index) => {
+          const duplicateItems = category.items.filter((item) => duplicateWarnings.some((warning) => warning.toLowerCase() === item.toLowerCase()));
+          const isAddingSkill = addingSkillCategoryId === category.categoryId;
+          return (
+            <div key={category.categoryId} className="overflow-hidden rounded-md border border-slate-200 bg-white">
+              <div className="group flex flex-wrap items-center gap-2 border-b border-slate-100 px-4 py-3">
+                <button
+                  className="grid h-8 w-8 place-items-center rounded-md text-slate-700 hover:bg-slate-50 disabled:opacity-40"
+                  type="button"
+                  aria-label={category.collapsed ? `Expand ${category.categoryName}` : `Collapse ${category.categoryName}`}
+                  title={category.collapsed ? "Expand" : "Collapse"}
+                  onClick={() => onUpdateCategory(category.categoryId, "collapsed", !category.collapsed)}
+                  disabled={disabled}
+                >
+                  <ChevronRight size={18} className={cn("transition-transform", !category.collapsed && "rotate-90")} />
+                </button>
+                <label className="min-w-56 flex-1 text-sm font-semibold text-slate-800">
+                  <span className="sr-only">Category name</span>
+                  <span className="block px-1 py-2 text-base font-bold text-slate-800">{category.categoryName}</span>
+                </label>
+                <span className="rounded-full bg-slate-100 px-2 py-1 text-xs font-semibold text-slate-600">
+                  {category.items.length}
+                </span>
+                <button
+                  type="button"
+                  className="grid h-8 w-8 place-items-center rounded-md text-slate-600 opacity-100 hover:bg-slate-50 disabled:opacity-40 sm:opacity-0 sm:group-hover:opacity-100"
+                  aria-label="Move skill category up"
+                  title="Move up"
+                  onClick={() => onMoveCategory(category.categoryId, -1)}
+                  disabled={disabled || index === 0}
+                >
+                  <ArrowUp size={15} />
+                </button>
+                <button
+                  type="button"
+                  className="grid h-8 w-8 place-items-center rounded-md text-slate-600 opacity-100 hover:bg-slate-50 disabled:opacity-40 sm:opacity-0 sm:group-hover:opacity-100"
+                  aria-label="Move skill category down"
+                  title="Move down"
+                  onClick={() => onMoveCategory(category.categoryId, 1)}
+                  disabled={disabled || index === categories.length - 1}
+                >
+                  <ArrowDown size={15} />
+                </button>
+                <button
+                  type="button"
+                  className="grid h-8 w-8 place-items-center rounded-md text-slate-600 opacity-100 hover:bg-rose-50 hover:text-rose-700 disabled:opacity-40 sm:opacity-0 sm:group-hover:opacity-100"
+                  aria-label="Delete skill category"
+                  title="Delete category"
+                  onClick={() => onRemoveCategory(category.categoryId)}
+                  disabled={disabled}
+                >
+                  <span className="text-xl leading-none">-</span>
+                </button>
+              </div>
+              {!category.collapsed && (
+                <div className="px-4 py-3">
+                  {category.items.length === 0 && (
+                    <p className="rounded-md bg-slate-50 px-3 py-3 text-sm text-slate-500">No skills added yet.</p>
+                  )}
+                  <div className="divide-y divide-slate-100">
+                    {category.items.map((skill) => {
+                      const skillKey = `${category.categoryId}:${skill}`;
+                      const isEditing = editingSkillKey === skillKey;
+                      const flagged = duplicateItems.includes(skill) || hasCategoryPrefix(skill);
+                      return (
+                        <div key={skill} className={cn("grid min-h-10 items-center gap-2 py-1.5 sm:grid-cols-[1fr_auto_auto]", flagged && "rounded-md bg-amber-50 px-2")}>
+                          {isEditing ? (
+                            <Input
+                              aria-label={`Edit ${skill}`}
+                              value={editingSkillValue}
+                              className="h-9 rounded-none"
+                              autoFocus
+                              onChange={(event) => setEditingSkillValue(event.target.value)}
+                              onKeyDown={(event) => {
+                                if (event.key === "Enter") {
+                                  event.preventDefault();
+                                  onUpdateSkill(category.categoryId, skill, editingSkillValue);
+                                  setEditingSkillKey(null);
+                                }
+                                if (event.key === "Escape") setEditingSkillKey(null);
+                              }}
+                              onBlur={() => {
+                                onUpdateSkill(category.categoryId, skill, editingSkillValue);
+                                setEditingSkillKey(null);
+                              }}
+                            />
+                          ) : (
+                            <span className={cn("text-sm text-slate-800", flagged && "text-amber-900")}>{skill}</span>
+                          )}
+                          <button
+                            type="button"
+                            className="grid h-8 w-8 place-items-center rounded-md text-slate-400 hover:bg-slate-100 hover:text-slate-900"
+                            aria-label={`Edit ${skill}`}
+                            title={`Edit ${skill}`}
+                            onClick={() => {
+                              setEditingSkillKey(skillKey);
+                              setEditingSkillValue(skill);
+                            }}
+                            disabled={disabled}
+                          >
+                            <Pencil size={15} />
+                          </button>
+                          <button
+                            type="button"
+                            className="grid h-8 w-8 place-items-center rounded-md text-slate-400 hover:bg-rose-50 hover:text-rose-700"
+                            aria-label={`Delete ${skill}`}
+                            title={`Delete ${skill}`}
+                            onClick={() => onRemoveSkill(category.categoryId, skill)}
+                            disabled={disabled}
+                          >
+                            <Trash2 size={15} />
+                          </button>
+                        </div>
+                      );
+                    })}
+                  </div>
+                  {isAddingSkill ? (
+                    <div className="mt-3 grid gap-2 sm:grid-cols-[1fr_auto_auto]">
+                      <Input
+                        aria-label={`Add skill to ${category.categoryName || "category"}`}
+                        value={category.pendingSkill}
+                        placeholder="Add a skill..."
+                        className="h-10 rounded-none"
+                        onChange={(event) => onUpdateCategory(category.categoryId, "pendingSkill", event.target.value)}
+                        onKeyDown={(event) => {
+                          if (event.key === "Enter") {
+                            event.preventDefault();
+                            onAddSkill(category.categoryId);
+                            setAddingSkillCategoryId(null);
+                          }
+                          if (event.key === "Escape") setAddingSkillCategoryId(null);
+                        }}
+                        disabled={disabled}
+                        autoFocus
+                      />
+                      <Button type="button" onClick={() => {
+                        onAddSkill(category.categoryId);
+                        setAddingSkillCategoryId(null);
+                      }} disabled={disabled || !category.pendingSkill.trim()}>
+                        Add
+                      </Button>
+                      <Button type="button" variant="secondary" onClick={() => setAddingSkillCategoryId(null)} disabled={disabled}>
+                        Cancel
+                      </Button>
+                    </div>
+                  ) : (
+                    <button
+                      type="button"
+                      className="mt-3 inline-flex items-center gap-2 rounded-md px-2 py-1.5 text-sm font-medium text-[#0f7891] hover:bg-[#e6f4f8]"
+                      onClick={() => setAddingSkillCategoryId(category.categoryId)}
+                      disabled={disabled}
+                    >
+                      <Plus size={15} /> Add Skill
+                    </button>
+                  )}
+                  {category.migrationReviewRequired && (
+                    <p className="mt-2 text-sm text-amber-700">Review migrated skills before relying on this category.</p>
+                  )}
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+export function buildCandidateProfile(profile: CandidateProfileForm): GeneratedResume {
   const name = [profile.firstName, profile.lastName].map((part) => part.trim()).filter(Boolean).join(" ");
-  const skillItems = profile.skills
-    .split(/[,\n]/)
-    .map((skill) => skill.trim())
-    .filter(Boolean);
+  const candidateLocation = {
+    city: profile.locationCity.trim(),
+    state: profile.locationState.trim() || null,
+    country: profile.locationCountry.trim(),
+  };
+  const skillCategories = profile.skills
+    .map(skillFormToProfileCategory)
+    .filter((category) => category.category.trim())
+    .map((category, index) => ({ ...category, order: index }));
 
   return {
     name,
+    firstName: profile.firstName.trim(),
+    lastName: profile.lastName.trim(),
     title: profile.title.trim(),
     contact: {
       phone: profile.phone.trim(),
       email: profile.email.trim(),
-      location: profile.location.trim(),
+      location: formatLocationDisplay(candidateLocation),
+      locationData: candidateLocation,
       linkedin: profile.linkedin.trim(),
       github: profile.github.trim(),
       portfolio: profile.portfolio.trim(),
     },
     summary: "",
-    skills: skillItems.length ? [{ category: "Technical Skills", items: skillItems }] : [],
+    skills: skillCategories,
     experience: profile.experience
       .filter((item) => item.company.trim() || item.role.trim())
       .map((item) => ({
         experienceId: item.id,
         company: item.company.trim(),
+        clientName: item.clientName.trim() || null,
         role: item.role.trim(),
-        location: item.location.trim(),
+        location: formatLocationDisplay({ city: item.city.trim(), state: item.state.trim() || null, country: item.country.trim() }),
+        locationData: { city: item.city.trim(), state: item.state.trim() || null, country: item.country.trim() },
         startDate: item.startDate.trim(),
-        endDate: item.endDate.trim(),
-        rawNotes: item.impactMetrics.trim(),
+        startDateData: parseProfileDate(item.startDate) ?? undefined,
+        endDate: item.isCurrentRole ? "Present" : item.endDate.trim(),
+        endDateData: item.isCurrentRole ? null : parseProfileDate(item.endDate),
+        isCurrentRole: item.isCurrentRole,
+        rawNotes: item.legacyNotes.trim(),
         bullets: [],
+        responsibilities: splitLines(item.responsibilities),
+        achievements: splitLines(item.achievements),
+        technologies: splitLines(item.technologies).flatMap((value) => value.split(",").map((item) => item.trim())).filter(Boolean),
+        metrics: normalizeMetricForms(item.metrics),
+        metricFlags: normalizeMetricForms(item.metrics).map((metric) => `${metric.label}: ${metric.value}`),
+        legacyNotes: item.legacyNotes.trim(),
+        migrationReviewRequired: item.migrationReviewRequired,
       })),
-    projects: [],
+    projects: profile.projects
+      .filter((item) => item.name.trim() || item.org.trim() || item.bullets.trim() || item.technologies.trim())
+      .map((item) => ({
+        projectId: item.id,
+        name: item.name.trim(),
+        org: item.org.trim(),
+        link: item.link.trim(),
+        bullets: splitLines(item.bullets),
+        technologies: splitLines(item.technologies).flatMap((value) => value.split(",").map((item) => item.trim())).filter(Boolean),
+        linkedExperienceIds: dedupeStrings(item.linkedExperienceIds),
+      })),
     education: profile.education
       .filter((item) => item.degree.trim() || item.institution.trim())
       .map((item) => ({
@@ -2087,33 +3193,57 @@ function buildCandidateProfile(profile: CandidateProfileForm): GeneratedResume {
         expiryDate: item.expiryDate.trim(),
       })),
   };
+
 }
 
-function profileFormFromCandidateProfile(profile: GeneratedResume): CandidateProfileForm {
-  const [firstName = "", ...lastParts] = profile.name.trim().split(/\s+/).filter(Boolean);
+export function profileFormFromCandidateProfile(profile: GeneratedResume): CandidateProfileForm {
+  const [fallbackFirstName = "", ...fallbackLastParts] = profile.name.trim().split(/\s+/).filter(Boolean);
+  const candidateLocation = migrateLegacyLocation(profile.contact.locationData ?? profile.contact.location ?? "");
   return {
     ...initialProfile,
-    firstName,
-    lastName: lastParts.join(" "),
+    firstName: (profile.firstName ?? "").trim() || fallbackFirstName,
+    lastName: (profile.lastName ?? "").trim() || fallbackLastParts.join(" "),
     title: profile.title ?? "",
     email: profile.contact.email ?? "",
     phone: profile.contact.phone ?? "",
-    location: profile.contact.location ?? "",
+    locationCity: candidateLocation.location.city,
+    locationState: candidateLocation.location.state ?? "",
+    locationCountry: candidateLocation.location.country,
     linkedin: profile.contact.linkedin ?? "",
     github: profile.contact.github ?? "",
     portfolio: profile.contact.portfolio ?? "",
-    skills: profile.skills.flatMap((group) => group.items).join(", "),
+    skills: normalizeSkillCategoryForms(profile.skills),
     experience: profile.experience.length
       ? profile.experience.map((item, index) => ({
           id: item.experienceId ?? `exp-${index + 1}`,
           company: item.company,
+          clientName: getExperienceClientName(item as typeof item & { client_name?: string | null }, item.legacyNotes ?? item.rawNotes ?? "", (item as typeof item & { client_name?: string | null }).client_name),
           role: item.role,
-          location: item.location ?? "",
-          startDate: item.startDate ?? "",
-          endDate: item.endDate ?? "",
-          impactMetrics: item.rawNotes ?? item.metricFlags?.join("\n") ?? "",
+          city: migrateLegacyLocation(item.locationData ?? item.location ?? "").location.city,
+          state: migrateLegacyLocation(item.locationData ?? item.location ?? "").location.state ?? "",
+          country: migrateLegacyLocation(item.locationData ?? item.location ?? "").location.country,
+          startDate: profileDateInputValue(item.startDateData ?? parseProfileDate(item.startDate ?? "")),
+          endDate: item.isCurrentRole || item.endDate === "Present" ? "" : profileDateInputValue(item.endDateData ?? parseProfileDate(item.endDate ?? "")),
+          isCurrentRole: Boolean(item.isCurrentRole ?? item.endDate === "Present"),
+          responsibilities: (item.responsibilities ?? []).join("\n"),
+          achievements: (item.achievements ?? []).join("\n"),
+          technologies: (item.technologies ?? []).join(", "),
+          metrics: (item.metrics ?? []).map((metric) => ({ id: metric.metricId, label: metric.label, value: metric.value })),
+          legacyNotes: item.legacyNotes ?? item.rawNotes ?? "",
+          migrationReviewRequired: Boolean(item.migrationReviewRequired),
         }))
       : initialProfile.experience,
+    projects: profile.projects.length
+      ? normalizeProjectForms(profile.projects.map((item, index) => ({
+          id: item.projectId ?? `project-${index + 1}`,
+          name: item.name,
+          org: item.org ?? "",
+          link: item.link ?? "",
+          bullets: item.bullets,
+          technologies: item.technologies,
+          linkedExperienceIds: item.linkedExperienceIds ?? [],
+        })))
+      : initialProfile.projects,
     education: profile.education.length
       ? profile.education.map((item, index) => ({
           id: item.educationId ?? `edu-${index + 1}`,
@@ -2136,7 +3266,17 @@ function profileFormFromCandidateProfile(profile: GeneratedResume): CandidatePro
   };
 }
 
-function validateProfile(profile: CandidateProfileForm) {
+function normalizeMetricForms(metrics: MetricForm[]): ExperienceMetric[] {
+  return metrics
+    .map((metric, index) => ({
+      metricId: metric.id || `metric-${index + 1}`,
+      label: metric.label.trim(),
+      value: metric.value.trim(),
+    }))
+    .filter((metric) => metric.label || metric.value);
+}
+
+export function validateProfile(profile: CandidateProfileForm) {
   const errors: string[] = [];
   const firstExperience = profile.experience.find((item) =>
     item.company.trim() || item.role.trim() || item.startDate.trim() || item.endDate.trim(),
@@ -2151,19 +3291,53 @@ function validateProfile(profile: CandidateProfileForm) {
     errors.push("Enter a valid email address.");
   }
   if (!profile.phone.trim()) errors.push("Phone is required.");
-  if (!profile.location.trim()) errors.push("Location is required.");
-  if (!profile.skills.trim()) errors.push("Skills are required.");
+  errors.push(...validateStructuredLocation({
+    city: profile.locationCity,
+    state: profile.locationState || null,
+    country: profile.locationCountry,
+  }, "Candidate location"));
+  const savedSkillCategories = profile.skills
+    .map(skillFormToProfileCategory)
+    .filter((category) => category.category.trim() && category.items.length > 0);
+  if (!savedSkillCategories.length) errors.push("At least one skill category with one skill is required.");
+  const categoryIds = new Set<string>();
+  const categoryNames = new Set<string>();
+  savedSkillCategories.forEach((category, index) => {
+    const label = `Skill category ${index + 1}`;
+    if (categoryIds.has(category.categoryId ?? "")) errors.push(`${label} category ID must be unique.`);
+    categoryIds.add(category.categoryId ?? "");
+    const nameKey = category.category.trim().toLowerCase();
+    if (!nameKey) errors.push(`${label} name is required.`);
+    if (categoryNames.has(nameKey)) errors.push(`${label} duplicates another category name.`);
+    categoryNames.add(nameKey);
+    const itemKeys = new Set<string>();
+    category.items.forEach((item) => {
+      const key = item.toLowerCase();
+      if (itemKeys.has(key)) errors.push(`${label} contains duplicate skill ${item}.`);
+      if (hasCategoryPrefix(item)) errors.push(`${label} skill "${item}" still contains a category label.`);
+      itemKeys.add(key);
+    });
+  });
   if (!firstExperience) {
     errors.push("At least one work experience is required.");
   } else {
     profile.experience
-      .filter((item) => item.company.trim() || item.role.trim() || item.startDate.trim() || item.endDate.trim())
+      .filter((item) => item.company.trim() || item.role.trim() || item.startDate.trim() || item.endDate.trim() || item.city.trim() || item.country.trim())
       .forEach((item, index) => {
         const label = `Work experience ${index + 1}`;
         if (!item.company.trim()) errors.push(`${label} company is required.`);
         if (!item.role.trim()) errors.push(`${label} role is required.`);
+        errors.push(...validateStructuredLocation({ city: item.city, state: item.state || null, country: item.country }, `${label} location`));
         if (!item.startDate.trim()) errors.push(`${label} start date is required.`);
-        if (!item.endDate.trim()) errors.push(`${label} end date is required.`);
+        if (!item.isCurrentRole && !item.endDate.trim()) errors.push(`${label} end date is required.`);
+        const start = parseProfileDate(item.startDate);
+        const end = item.isCurrentRole ? null : parseProfileDate(item.endDate);
+        if (!item.isCurrentRole && end && start && datePrecedes(end, start)) errors.push(`${label} end date cannot be before start date.`);
+        item.metrics.forEach((metric, metricIndex) => {
+          if ((metric.label.trim() && !metric.value.trim()) || (!metric.label.trim() && metric.value.trim())) {
+            errors.push(`${label} metric ${metricIndex + 1} requires both label and value.`);
+          }
+        });
       });
   }
 
@@ -2174,6 +3348,20 @@ function validateProfile(profile: CandidateProfileForm) {
       if (!item.degree.trim()) errors.push(`${label} degree is required.`);
       if (!item.institution.trim()) errors.push(`${label} institution is required.`);
       if (!item.gradYear.trim()) errors.push(`${label} graduation year is required.`);
+    });
+
+  const validExperienceIds = new Set(profile.experience.map((item) => item.id).filter(Boolean));
+  profile.projects
+    .filter((item) => item.name.trim() || item.org.trim() || item.link.trim() || item.bullets.trim() || item.technologies.trim() || item.linkedExperienceIds.length)
+    .forEach((item, index) => {
+      const label = `Project ${index + 1}`;
+      if (!item.name.trim()) errors.push(`${label} name is required.`);
+      const linkIds = item.linkedExperienceIds.map((id) => id.trim());
+      if (linkIds.some((id) => !id)) errors.push(`${label} related work experience cannot contain blank IDs.`);
+      if (new Set(linkIds).size !== linkIds.length) errors.push(`${label} related work experience cannot contain duplicate IDs.`);
+      linkIds.forEach((experienceId) => {
+        if (!validExperienceIds.has(experienceId)) errors.push(`${label} references a work experience that no longer exists.`);
+      });
     });
 
   profile.certifications
@@ -2241,7 +3429,9 @@ function AtsCard({
   generation: GeneratedResumeResponse;
   onApplyKeyword: (keyword: string) => void;
 }) {
-  const score = generation.atsScore;
+  const score = generation.atsAnalysis?.score ?? generation.atsScore;
+  const breakdown = generation.atsAnalysis?.breakdown ?? generation.breakdown;
+  const suggestions = generation.atsAnalysis?.suggestions ?? generation.suggestions;
   const scoreTone = score >= 85 ? "Strong" : score >= 75 ? "Good" : "Needs work";
 
   return (
@@ -2268,21 +3458,21 @@ function AtsCard({
         <div>
           <div className="mb-6 flex items-center justify-between">
             <h3 className="text-xl font-bold">ATS match score</h3>
-            <span className="text-slate-500">{generation.suggestions.length} suggestions left</span>
+            <span className="text-slate-500">{suggestions.length} suggestions left</span>
           </div>
-          <ScoreRow label="Keyword match" value={generation.breakdown.keywordMatch} color="bg-[#0f7891]" />
-          <ScoreRow label="Formatting" value={generation.breakdown.formatting} color="bg-emerald-600" />
-          <ScoreRow label="Readability" value={generation.breakdown.readability} color="bg-emerald-600" />
+          <ScoreRow label="Keyword match" value={breakdown.keywordMatch} color="bg-[#0f7891]" />
+          <ScoreRow label="Formatting" value={breakdown.formatting} color="bg-emerald-600" />
+          <ScoreRow label="Readability" value={breakdown.readability} color="bg-emerald-600" />
           <div className="mt-6 border-t border-slate-200 pt-5">
             <p className="mb-4 text-slate-500">Keywords from the job description</p>
             <div className="flex flex-wrap gap-2">
-              {generation.breakdown.matchedKeywords.map((keyword) => (
+              {breakdown.matchedKeywords.map((keyword) => (
                 <Badge key={keyword} tone="green" className="rounded-full px-3">
                   <Check size={13} />
                   {keyword}
                 </Badge>
               ))}
-              {generation.breakdown.missingKeywords.map((keyword) => (
+              {breakdown.missingKeywords.map((keyword) => (
                 <button
                   key={keyword}
                   type="button"
@@ -2304,17 +3494,20 @@ function AtsCard({
 
 function ResumeAiMetricsCard({ generation }: { generation: GeneratedResumeResponse }) {
   const metrics = generation.aiMetrics;
-  if (!metrics) return null;
+  const metadata = generation.generationMetadata;
+  if (!metrics && !metadata) return null;
+  const generationTimeMs = metadata?.durationMs ?? metrics?.generationTimeMs ?? 0;
+  const modelsUsed = metadata?.model ? [metadata.model] : metrics?.modelsUsed ?? [];
 
   return (
     <Card className="rounded-md p-5">
       <div className="grid gap-4 md:grid-cols-3 xl:grid-cols-6">
-        <MiniMetric label="Generation time" value={`${Math.max(1, Math.round(metrics.generationTimeMs / 1000))}s`} />
-        <MiniMetric label="AI cost" value={formatMoney(metrics.aiCost)} />
-        <MiniMetric label="Tokens used" value={metrics.tokensUsed.toLocaleString()} />
-        <MiniMetric label="Models used" value={metrics.modelsUsed.length ? metrics.modelsUsed.join(", ") : "None"} />
-        <MiniMetric label="Cache used" value={metrics.cacheUsed ? "Yes" : "No"} />
-        <MiniMetric label="Validation score" value={`${metrics.validationScore}/100`} />
+        <MiniMetric label="Generation time" value={`${Math.max(1, Math.round(generationTimeMs / 1000))}s`} />
+        <MiniMetric label="AI cost" value={formatMoney(metrics?.aiCost ?? 0)} />
+        <MiniMetric label="Tokens used" value={(metrics?.tokensUsed ?? 0).toLocaleString()} />
+        <MiniMetric label="Models used" value={modelsUsed.length ? modelsUsed.join(", ") : "None"} />
+        <MiniMetric label="Cache used" value={metrics?.cacheUsed ? "Yes" : "No"} />
+        <MiniMetric label="Validation score" value={`${metrics?.validationScore ?? 100}/100`} />
       </div>
     </Card>
   );

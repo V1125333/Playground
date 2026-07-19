@@ -1,5 +1,9 @@
 import type {
+  AtsAnalysis,
+  AtsCoverageBreakdown,
+  GenerateResumeRequestPayload,
   GeneratedResumeResponse,
+  GenerationMetadata,
   JobAnalysisResponse,
   ProfileMatchResponse,
   StructuredGeneratedResume,
@@ -26,12 +30,67 @@ async function requestJson<T>(path: string, token: string, init?: RequestInit): 
   return (await response.json()) as T;
 }
 
-export async function generateResume(token: string, payload: Record<string, unknown>): Promise<GeneratedResumeResponse> {
-  return requestJson<GeneratedResumeResponse>("/api/resumes/generate", token, {
+export async function generateResume(token: string, payload: GenerateResumeRequestPayload | Record<string, unknown>): Promise<GeneratedResumeResponse> {
+  const response = await requestJson<GeneratedResumeResponse>("/api/resumes/generate", token, {
     method: "POST",
     headers: authHeaders(token),
     body: JSON.stringify(payload),
   });
+  return normalizeGenerateResumeResponse(response);
+}
+
+export function normalizeGenerateResumeResponse(response: GeneratedResumeResponse): GeneratedResumeResponse {
+  const legacyBreakdown = response.breakdown ?? {
+    keywordMatch: 0,
+    formatting: 0,
+    readability: 0,
+    matchedKeywords: [],
+    missingKeywords: [],
+  };
+  const score = response.atsAnalysis?.score ?? response.atsScore ?? 0;
+  const coverage = response.atsAnalysis?.coverage ?? legacyBreakdown.coverage ?? emptyCoverage();
+  const breakdown = response.atsAnalysis?.breakdown ?? {
+    keywordMatch: legacyBreakdown.keywordMatch ?? 0,
+    formatting: legacyBreakdown.formatting ?? 0,
+    readability: legacyBreakdown.readability ?? 0,
+    matchedKeywords: legacyBreakdown.matchedKeywords ?? [],
+    missingKeywords: legacyBreakdown.missingKeywords ?? [],
+  };
+  const suggestions = response.atsAnalysis?.suggestions ?? response.suggestions ?? [];
+  const resumeId = response.resumeId ?? response.persistedResumeId ?? response.structuredResume?.resumeId ?? "";
+  const generationMetadata = response.generationMetadata ?? metadataFromLegacy(response);
+  const aiMetrics = response.aiMetrics ?? {
+    generationTimeMs: generationMetadata.durationMs,
+    aiCost: 0,
+    tokensUsed: 0,
+    modelsUsed: generationMetadata.model ? [generationMetadata.model] : [],
+    cacheUsed: false,
+    atsScore: score,
+    validationScore: response.validationResult?.isValid === false ? 0 : 100,
+  };
+  const atsAnalysis: AtsAnalysis = {
+    score,
+    breakdown,
+    coverage,
+    suggestions,
+  };
+
+  return {
+    ...response,
+    resumeId,
+    persistedResumeId: resumeId,
+    atsAnalysis,
+    atsScore: score,
+    breakdown: { ...breakdown, coverage },
+    suggestions,
+    generationMetadata,
+    aiMetrics: {
+      ...aiMetrics,
+      generationTimeMs: generationMetadata.durationMs,
+      modelsUsed: generationMetadata.model ? [generationMetadata.model] : aiMetrics.modelsUsed,
+      atsScore: score,
+    },
+  };
 }
 
 export async function analyzeJob(token: string, payload: Record<string, unknown>): Promise<JobAnalysisResponse> {
@@ -145,4 +204,23 @@ async function exportResume(token: string, resumeId: string, format: "pdf" | "do
 function filenameFromDisposition(value: string | null): string | null {
   const match = value?.match(/filename\*?=(?:UTF-8'')?"?([^";]+)"?/i);
   return match?.[1] ? decodeURIComponent(match[1]) : null;
+}
+
+function emptyCoverage(): AtsCoverageBreakdown {
+  return {
+    supportedAndCovered: [],
+    supportedButNotRepresented: [],
+    adjacentUnsupported: [],
+    unmatched: [],
+    suggestedExcluded: [],
+  };
+}
+
+function metadataFromLegacy(response: GeneratedResumeResponse): GenerationMetadata {
+  return {
+    model: response.aiMetrics?.modelsUsed?.[0] ?? null,
+    durationMs: response.aiMetrics?.generationTimeMs ?? 0,
+    generatedAt: response.structuredResume?.createdAt ?? "",
+    pipelineVersion: response.structuredResume?.generationAlgorithmVersion ?? "",
+  };
 }

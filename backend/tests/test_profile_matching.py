@@ -89,7 +89,7 @@ def test_safe_normalized_skill_match() -> None:
         profile(skills=["OOP"]),
     )
 
-    assert only_match(result, "Object-Oriented Development").classification == "exact"
+    assert only_match(result, "Object-Oriented Development").classification == "normalized"
 
 
 def test_broad_requirement_matches_specific_evidence_directionally() -> None:
@@ -254,7 +254,14 @@ def test_suggested_keyword_does_not_reduce_overall_score() -> None:
     )
 
     assert result_with_suggested.match_summary.overall_match_score == result_without_suggested.match_summary.overall_match_score
-    assert only_match(result_with_suggested, "Kubernetes").classification == "unmatched"
+    assert all(
+        match.requirement_value != "Kubernetes"
+        for match in [
+            *result_with_suggested.match_summary.matched_requirements,
+            *result_with_suggested.match_summary.partially_matched_requirements,
+            *result_with_suggested.match_summary.unmatched_requirements,
+        ]
+    )
 
 
 def test_every_matched_requirement_contains_valid_evidence_id() -> None:
@@ -334,6 +341,6 @@ def test_original_jd_profile_matching_safety() -> None:
     unmatched = {item.requirement_value for item in result.match_summary.unmatched_requirements}
     adjacent = {item.requirement_value for item in result.match_summary.partially_matched_requirements}
 
-    assert {"C#", ".NET", "Databases", "Modern Web Technologies", "Application Frameworks", "CI/CD", "Code Review", "Bachelor's Degree", "7+ Years of Experience"} <= matched
-    assert {"Python", "Financial Services", "Trading"} <= unmatched
+    assert {"C#", ".NET", "Modern Web Technologies", "Application Frameworks", "CI/CD", "Code Review", "Bachelor's Degree", "7+ Years of Experience"} <= matched
+    assert {"Databases", "Python", "Financial Services", "Trading"} <= unmatched
     assert "Technical Leadership" in adjacent

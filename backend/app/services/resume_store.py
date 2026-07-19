@@ -8,6 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.schemas.resume import CandidateProfile, ProfileMatchSummary, StructuredGeneratedResume, StructuredResumeRecord
 from app.services.profile_matching import build_profile_evidence_index
 from app.services.resume_validator import validate_structured_resume
+from app.services.structured_bullets import normalize_structured_resume_bullets
 
 
 class ResumeNotFoundError(Exception):
@@ -28,6 +29,7 @@ async def create_generated_resume(
 ) -> StructuredResumeRecord:
     from app.models.generated_resume import GeneratedResumeModel
 
+    resume = normalize_structured_resume_bullets(resume)
     record = GeneratedResumeModel(
         user_id=user_id,
         profile_id=uuid.UUID(resume.profile_id),
@@ -88,6 +90,7 @@ async def update_resume(
     status: str = "draft",
 ) -> StructuredResumeRecord:
     record = await get_resume_model(session, user_id, resume_id)
+    resume = normalize_structured_resume_bullets(resume)
     resume = await validate_resume_for_update(session, user_id, record.profile_id, resume, record.profile_match_json)
     record.resume_json = resume.model_dump(mode="json", by_alias=True)
     record.status = resume.status or status
@@ -136,7 +139,7 @@ async def save_resume_version(session: AsyncSession, user_id: uuid.UUID, resume_
     from app.models.generated_resume import GeneratedResumeModel
 
     next_version = await next_version_number(session, user_id, source.id)
-    resume = StructuredGeneratedResume.model_validate(source.resume_json).model_copy(
+    resume = normalize_structured_resume_bullets(StructuredGeneratedResume.model_validate(source.resume_json)).model_copy(
         update={"version_number": next_version, "status": "draft"}
     )
     record = GeneratedResumeModel(
@@ -212,6 +215,7 @@ async def get_resume_model(session: AsyncSession, user_id: uuid.UUID, resume_id:
 
 
 def record_to_schema(record) -> StructuredResumeRecord:
+    resume_json = normalize_structured_resume_bullets(StructuredGeneratedResume.model_validate(record.resume_json))
     return StructuredResumeRecord(
         resumeId=str(record.id),
         userId=str(record.user_id),
@@ -224,7 +228,7 @@ def record_to_schema(record) -> StructuredResumeRecord:
         jobDescription=record.job_description,
         jobAnalysisJson=record.job_analysis_json,
         profileMatchJson=record.profile_match_json,
-        resumeJson=StructuredGeneratedResume.model_validate(record.resume_json),
+        resumeJson=resume_json,
         templateId=record.template_id,
         matchScore=record.match_score,
         generationAlgorithmVersion=record.generation_algorithm_version,

@@ -18,9 +18,13 @@ from app.schemas.resume import (
     ProfileMatchSummary,
     RequirementMatch,
 )
+from app.services.responsibility_taxonomy import (
+    controlled_responsibility_match,
+    semantic_reason_for_match,
+)
 
 
-PROFILE_MATCH_CACHE_VERSION = "profile-match-v1-evidence-grounded"
+PROFILE_MATCH_CACHE_VERSION = "profile-match-v2-responsibility-taxonomy"
 
 _PROFILE_MATCH_CACHE: dict[str, ProfileMatchSummary] = {}
 
@@ -83,7 +87,9 @@ CANONICAL_ALIASES: dict[str, tuple[str, ...]] = {
         "served as technical lead",
     ),
     "Testing Best Practices": ("testing best practices", "software testing", "application testing"),
-    "Unit Testing": ("unit testing", "unit tests", "nunit", "mstest", "jest"),
+    "Unit Testing": ("unit testing", "unit tests"),
+    "NUnit": ("nunit",),
+    "Jest": ("jest",),
     "Integration Testing": ("integration testing", "integration tests"),
     "Regression Testing": ("regression testing", "regression tests"),
     "Cloud Platforms": ("cloud platforms", "cloud platform", "cloud services", "cloud environment"),
@@ -93,11 +99,15 @@ CANONICAL_ALIASES: dict[str, tuple[str, ...]] = {
     "Application Frameworks": ("application frameworks", "application framework", "modern development frameworks"),
     "REST API Development": ("rest api", "rest apis", "restful api", "restful apis", "api development", "apis"),
     "API Development": ("api development", "apis", "rest api", "rest apis", "service integrations"),
-    "SQL Server": ("sql server", "ms sql server", "mssql"),
+    "SQL Server": ("sql server", "ms sql server", "mssql", "microsoft sql server"),
+    "MSTest": ("mstest", "ms test"),
+    "Entity Framework": ("entity framework", "entity framework core", "ef core"),
+    "T-SQL": ("t-sql", "tsql", "transact sql"),
     "PostgreSQL": ("postgresql", "postgres"),
     "Google Cloud": ("google cloud", "gcp"),
     "AWS": ("aws", "amazon web services"),
     "Azure": ("azure", "microsoft azure"),
+    "Azure Kubernetes Service": ("azure kubernetes service", "aks"),
     "Financial Services": ("financial services", "fintech", "banking", "payments", "aml", "anti money laundering"),
     "Trading": ("trading", "trading systems", "trading applications"),
     "Healthcare": ("healthcare", "provider portal", "claims", "authorizations"),
@@ -117,7 +127,7 @@ BROAD_TO_SPECIFIC: dict[str, tuple[str, ...]] = {
 
 
 SAME_CATEGORY_ADJACENT: tuple[tuple[str, ...], ...] = (
-    ("Azure", "AWS", "Google Cloud", "Cloud Platforms"),
+    ("Azure", "AWS", "Google Cloud", "Azure Kubernetes Service", "Cloud Platforms"),
     ("SQL Server", "PostgreSQL", "MySQL", "Oracle", "MongoDB", "Databases"),
     ("NUnit", "MSTest", "Jest", "Unit Testing", "Testing Best Practices"),
 )
@@ -192,7 +202,21 @@ def validate_profile_for_matching(profile: CandidateProfile | None) -> None:
         profile.title,
         profile.summary,
         " ".join(skill for group in profile.skills for skill in group.items),
-        " ".join(" ".join([item.company, item.role, item.raw_notes, *item.bullets]) for item in profile.experience),
+        " ".join(
+            " ".join([
+                item.company,
+                item.client_name or "",
+                item.role,
+                item.raw_notes,
+                item.legacy_notes,
+                *item.responsibilities,
+                *item.achievements,
+                *item.technologies,
+                *[f"{metric.label} {metric.value}" for metric in item.metrics],
+                *item.bullets,
+            ])
+            for item in profile.experience
+        ),
         " ".join(" ".join([item.name, *item.technologies, *item.bullets]) for item in profile.projects),
         " ".join(" ".join([item.degree, item.institution]) for item in profile.education),
         " ".join(" ".join([item.name, item.issuer]) for item in profile.certifications),
@@ -249,9 +273,11 @@ def build_profile_evidence_index(profile: CandidateProfile, profile_id: str = "l
         source_label = f"{experience.role or 'Role'} at {experience.company or 'Company'}".strip()
         for field_name, value in (
             ("company", experience.company),
+            ("client", experience.client_name or ""),
             ("role", experience.role),
             ("location", experience.location),
             ("raw-notes", experience.raw_notes),
+            ("legacy-notes", experience.legacy_notes),
         ):
             if value.strip():
                 evidence.append(
@@ -263,8 +289,44 @@ def build_profile_evidence_index(profile: CandidateProfile, profile_id: str = "l
                         source_record_id=record_id,
                         company_name=experience.company or None,
                         role_title=experience.role or None,
-                        strength=95 if field_name == "raw-notes" else 70,
-                        reason="Stored work-experience field.",
+                        strength=95 if field_name == "raw-notes" else 45 if field_name == "legacy-notes" else 70,
+                        reason="Stored work-experience field." if field_name != "legacy-notes" else "Legacy free-text preserved for review; not treated as validated metric evidence.",
+                    )
+                )
+        for kind, values, evidence_type, strength, reason in (
+            ("responsibility", experience.responsibilities, ProfileEvidenceType.work_experience, 90, "Structured responsibility stored in the candidate profile."),
+            ("technology", experience.technologies, ProfileEvidenceType.skill, 90, "Technology stored on a specific work experience."),
+            ("achievement", experience.achievements, ProfileEvidenceType.achievement, 95, "Structured achievement stored in the candidate profile."),
+        ):
+            for value in values:
+                if value.strip():
+                    evidence.append(
+                        evidence_item(
+                            f"{record_id}-{kind}-{content_digest(value)}",
+                            evidence_type,
+                            source_label,
+                            value,
+                            source_record_id=record_id,
+                            company_name=experience.company or None,
+                            role_title=experience.role or None,
+                            strength=strength,
+                            reason=reason,
+                        )
+                    )
+        for metric in experience.metrics:
+            original = " ".join(value for value in [metric.label, metric.value] if value)
+            if original.strip():
+                evidence.append(
+                    evidence_item(
+                        f"{record_id}-metric-{content_digest(original)}",
+                        ProfileEvidenceType.achievement,
+                        source_label,
+                        original,
+                        source_record_id=record_id,
+                        company_name=experience.company or None,
+                        role_title=experience.role or None,
+                        strength=100,
+                        reason="Structured metric stored in the candidate profile.",
                     )
                 )
         for bullet_index, bullet in enumerate(experience.bullets):
@@ -302,19 +364,36 @@ def build_profile_evidence_index(profile: CandidateProfile, profile_id: str = "l
         project_id = project.project_id or stable_parent_id("project", "|".join([project.name, project.org]))
         record_id = f"project-{project_id}"
         source_label = f"Project - {project.name}"
-        project_fields = [project.name, project.org, " ".join(project.technologies), *project.bullets]
-        for field_index, value in enumerate(project_fields):
-            if value.strip():
+        for bullet in project.bullets:
+            if bullet.strip():
                 evidence.append(
                     evidence_item(
-                        f"{record_id}-field-{content_digest(value)}",
+                        f"{record_id}-bullet-{content_digest(bullet)}",
                         ProfileEvidenceType.project,
                         source_label,
-                        value,
+                        bullet,
                         source_record_id=record_id,
                         project_name=project.name or None,
+                        project_id=project_id,
+                        linked_experience_ids=project.linked_experience_ids,
                         strength=80,
-                        reason="Stored project evidence.",
+                        reason="Stored project bullet evidence.",
+                    )
+                )
+        for technology in project.technologies:
+            if technology.strip():
+                evidence.append(
+                    evidence_item(
+                        f"{record_id}-technology-{content_digest(technology)}",
+                        ProfileEvidenceType.project,
+                        source_label,
+                        technology,
+                        source_record_id=record_id,
+                        project_name=project.name or None,
+                        project_id=project_id,
+                        linked_experience_ids=project.linked_experience_ids,
+                        strength=85,
+                        reason="Stored project technology evidence.",
                     )
                 )
 
@@ -374,6 +453,8 @@ def evidence_item(
     company_name: str | None = None,
     role_title: str | None = None,
     project_name: str | None = None,
+    project_id: str | None = None,
+    linked_experience_ids: list[str] | None = None,
     strength: int,
     reason: str,
 ) -> ProfileEvidenceItem:
@@ -387,6 +468,8 @@ def evidence_item(
         companyName=company_name,
         roleTitle=role_title,
         projectName=project_name,
+        projectId=project_id,
+        linkedExperienceIds=linked_experience_ids or [],
         strengthScore=max(0, min(100, strength)),
         reason=reason,
     )
@@ -410,6 +493,9 @@ def content_digest(value: str) -> str:
 
 
 def requirements_from_job_analysis(job_analysis: JobAnalysisResponse) -> list[RequirementCandidate]:
+    typed = requirements_from_typed_job_analysis(job_analysis)
+    if typed:
+        return typed
     items = job_analysis.keywords or [
         *job_analysis.explicit_keywords,
         *job_analysis.inferred_keywords,
@@ -417,6 +503,8 @@ def requirements_from_job_analysis(job_analysis: JobAnalysisResponse) -> list[Re
     ]
     by_id: dict[str, RequirementCandidate] = {}
     for item in items:
+        if item.source_type == KeywordSourceType.suggested:
+            continue
         value = item.value or item.term
         if not value.strip():
             continue
@@ -425,6 +513,45 @@ def requirements_from_job_analysis(job_analysis: JobAnalysisResponse) -> list[Re
         if not existing or requirement.priority_score > existing.priority_score:
             by_id[requirement.id] = requirement
     return list(by_id.values())
+
+
+def requirements_from_typed_job_analysis(job_analysis: JobAnalysisResponse) -> list[RequirementCandidate]:
+    groups = job_analysis.normalized_requirements
+    typed_items = [
+        *groups.technical_requirements,
+        *groups.responsibility_requirements,
+        *groups.experience_requirements,
+        *groups.education_requirements,
+        *groups.certification_requirements,
+        *groups.leadership_requirements,
+        *groups.soft_skill_requirements,
+        *groups.domain_requirements,
+    ]
+    by_id: dict[str, RequirementCandidate] = {}
+    for item in typed_items:
+        if not item.explicit or item.requirement_level == "inferred":
+            continue
+        candidate = RequirementCandidate(
+            id=item.requirement_id,
+            value=item.canonical_term,
+            normalized=canonicalize(item.canonical_term),
+            category=item.category,
+            priority=typed_priority_to_match_priority(item.priority),
+            priority_score=typed_priority_to_score(item.priority),
+            source_type=KeywordSourceType.explicit,
+        )
+        existing = by_id.get(candidate.id)
+        if not existing or candidate.priority_score > existing.priority_score:
+            by_id[candidate.id] = candidate
+    return list(by_id.values())
+
+
+def typed_priority_to_match_priority(priority: str) -> str:
+    return "high" if str(priority).lower() in {"critical", "high"} else "medium" if str(priority).lower() == "medium" else "low"
+
+
+def typed_priority_to_score(priority: str) -> int:
+    return {"critical": 95, "high": 85, "medium": 60, "low": 35}.get(str(priority).lower(), 60)
 
 
 def requirement_from_keyword(item: JobKeywordAnalysisItem) -> RequirementCandidate:
@@ -454,16 +581,15 @@ def match_requirement_to_profile(
     if education_match:
         return education_match
 
-    match_value = requirement.normalized or requirement.value
-    exact = evidence_matching_requirement(match_value, evidence_index, MatchClassification.exact)
+    exact = evidence_matching_requirement(requirement, evidence_index, MatchClassification.exact)
     if exact:
         return build_requirement_match(requirement, MatchClassification.exact, exact, [])
 
-    normalized = evidence_matching_requirement(match_value, evidence_index, MatchClassification.normalized)
+    normalized = evidence_matching_requirement(requirement, evidence_index, MatchClassification.normalized)
     if normalized:
         return build_requirement_match(requirement, MatchClassification.normalized, normalized, [])
 
-    adjacent = evidence_matching_requirement(match_value, evidence_index, MatchClassification.adjacent)
+    adjacent = evidence_matching_requirement(requirement, evidence_index, MatchClassification.adjacent)
     if adjacent:
         return build_requirement_match(requirement, MatchClassification.adjacent, [], adjacent)
 
@@ -471,45 +597,57 @@ def match_requirement_to_profile(
 
 
 def evidence_matching_requirement(
-    requirement_value: str,
+    requirement: RequirementCandidate,
     evidence_index: list[ProfileEvidenceItem],
     classification: MatchClassification,
 ) -> list[ProfileEvidenceItem]:
     matches: list[ProfileEvidenceItem] = []
     for evidence in evidence_index:
-        result = classify_evidence_against_requirement(requirement_value, evidence)
+        result = classify_evidence_against_requirement(requirement, evidence)
         if result == classification:
-            matches.append(evidence_with_match(evidence, requirement_value, classification))
+            matches.append(evidence_with_match(evidence, requirement.value, classification))
     return strongest_unique_evidence(matches)
 
 
-def classify_evidence_against_requirement(requirement_value: str, evidence: ProfileEvidenceItem) -> MatchClassification:
-    requirement = canonicalize(requirement_value)
+def classify_evidence_against_requirement(requirement: RequirementCandidate, evidence: ProfileEvidenceItem) -> MatchClassification:
+    canonical_requirement = requirement.normalized or canonicalize(requirement.value)
     text = evidence_text(evidence)
 
-    if requirement == "Technical Leadership":
+    if canonical_requirement == "Technical Leadership":
         if leadership_evidence_is_direct(text):
             return MatchClassification.normalized
         if evidence.evidence_type == ProfileEvidenceType.summary and "senior" in normalize_key(text):
             return MatchClassification.adjacent
         return MatchClassification.unmatched
 
-    if requirement == "Trading":
+    if canonical_requirement == "Trading":
         return MatchClassification.exact if contains_canonical(text, "Trading") else MatchClassification.unmatched
 
-    if requirement == "Financial Services":
+    if canonical_requirement == "Financial Services":
         return MatchClassification.normalized if contains_canonical(text, "Financial Services") else MatchClassification.unmatched
 
-    if contains_canonical(text, requirement):
+    if canonical_requirement == "Databases":
+        original_only = normalize_key(evidence.original_text)
+        if phrase_in_text("databases", original_only) or phrase_in_text("database development", original_only):
+            return MatchClassification.normalized
+        return MatchClassification.unmatched
+
+    if contains_exact_requirement_text(text, requirement.value):
         return MatchClassification.exact
 
-    if requirement in BROAD_TO_SPECIFIC and any(contains_canonical(text, specific) for specific in BROAD_TO_SPECIFIC[requirement]):
+    if contains_controlled_alias(text, canonical_requirement):
         return MatchClassification.normalized
 
-    if any(requirement == specific and contains_canonical(text, broad) for broad, specifics in BROAD_TO_SPECIFIC.items() for specific in specifics):
+    if controlled_responsibility_match(requirement.value, evidence):
+        return MatchClassification.normalized
+
+    if canonical_requirement in BROAD_TO_SPECIFIC and any(contains_canonical(text, specific) for specific in BROAD_TO_SPECIFIC[canonical_requirement]):
+        return MatchClassification.normalized
+
+    if any(canonical_requirement == specific and contains_canonical(text, broad) for broad, specifics in BROAD_TO_SPECIFIC.items() for specific in specifics):
         return MatchClassification.adjacent
 
-    if adjacent_same_category(requirement, text):
+    if adjacent_same_category(canonical_requirement, text):
         return MatchClassification.adjacent
 
     return MatchClassification.unmatched
@@ -789,6 +927,9 @@ def reason_for_match(
     if classification == MatchClassification.exact:
         return f"{requirement} is directly present in stored profile evidence."
     if classification == MatchClassification.normalized:
+        semantic_reason = semantic_reason_for_match(requirement, evidence)
+        if semantic_reason:
+            return semantic_reason
         return f"{requirement} is supported by a safe canonical or direction-aware equivalent."
     if classification == MatchClassification.adjacent:
         labels = ", ".join(item.source_label for item in adjacent_evidence[:2])
@@ -803,9 +944,29 @@ def contains_canonical(text: str, canonical: str) -> bool:
     return any(phrase_in_text(alias, normalized) for alias in aliases)
 
 
+def contains_exact_requirement_text(text: str, requirement_value: str) -> bool:
+    normalized_text = normalize_key(text)
+    normalized_requirement = normalize_key(requirement_value)
+    if not normalized_requirement:
+        return False
+    if normalized_requirement == "azure" and phrase_in_text("azure kubernetes service", normalized_text):
+        return False
+    return phrase_in_text(normalized_requirement, normalized_text)
+
+
+def contains_controlled_alias(text: str, canonical: str) -> bool:
+    normalized = normalize_key(text)
+    canonical_value = canonicalize(canonical)
+    if canonical_value == "Azure" and phrase_in_text("azure kubernetes service", normalized):
+        return False
+    aliases = CANONICAL_ALIASES.get(canonical_value, ())
+    return any(phrase_in_text(alias, normalized) for alias in aliases)
+
+
 def adjacent_same_category(requirement: str, text: str) -> bool:
     for group in SAME_CATEGORY_ADJACENT:
-        if requirement in group and not contains_canonical(text, requirement):
+        already_supported = contains_exact_requirement_text(text, requirement) or contains_controlled_alias(text, requirement)
+        if requirement in group and not already_supported:
             return any(contains_canonical(text, item) for item in group if item != requirement)
     return False
 
@@ -880,6 +1041,7 @@ def profile_match_cache_key(
         "profileContentHash": profile_content_hash,
         "profile": profile.model_dump(mode="json", by_alias=True),
         "analysisHash": job_analysis.analysis_hash,
+        "normalizedRequirements": job_analysis.normalized_requirements.model_dump(mode="json", by_alias=True),
         "keywords": [item.model_dump(mode="json", by_alias=True) for item in job_analysis.keywords],
         "version": PROFILE_MATCH_CACHE_VERSION,
     }

@@ -9,6 +9,7 @@ from app.schemas.resume import (
     ResumeValidationResult,
     StructuredGeneratedResume,
 )
+from app.services.structured_bullets import bullet_generated_text, bullet_text, normalize_structured_resume_bullets
 
 
 def validate_structured_resume(
@@ -16,6 +17,9 @@ def validate_structured_resume(
     evidence_index: list[ProfileEvidenceItem],
     profile_match: ProfileMatchSummary,
 ) -> ResumeValidationResult:
+    normalized_resume = normalize_structured_resume_bullets(resume)
+    if normalized_resume is not resume:
+        resume.sections = normalized_resume.sections
     evidence_ids = {item.evidence_id for item in evidence_index}
     matched_requirement_ids = {
         match.requirement_id
@@ -32,6 +36,7 @@ def validate_structured_resume(
         if match.requirement_value.strip()
     }
     adjacent_requirement_ids = {match.requirement_id for match in profile_match.partially_matched_requirements}
+    safe_requirement_ids = {match.requirement_id for match in profile_match.matched_requirements}
     errors: list[ResumeValidationIssue] = []
     warnings: list[ResumeValidationIssue] = []
     rejected: list[str] = []
@@ -56,6 +61,19 @@ def validate_structured_resume(
             rejected.append(section.section_id)
         if any(requirement_id in adjacent_requirement_ids for requirement_id in provenance.supported_requirement_ids):
             warnings.append(issue("adjacent_requirement_context", "warning", "Adjacent requirement may be used only as transferable context.", section.section_id, section.section_id))
+
+        if section.type == "experience":
+            validate_experience_bullets(
+                section,
+                evidence_index,
+                evidence_ids,
+                safe_requirement_ids,
+                adjacent_requirement_ids,
+                unmatched_requirement_ids,
+                errors,
+                warnings,
+                rejected,
+            )
 
         texts = section_texts(section.content)
         if not texts:
@@ -115,7 +133,7 @@ def section_texts(content) -> list[str]:
                 texts.extend(str(value) for value in item.values() if isinstance(value, str))
                 bullets = item.get("bullets")
                 if isinstance(bullets, list):
-                    texts.extend(str(value) for value in bullets)
+                    texts.extend(bullet_text(value) for value in bullets if bullet_text(value))
         return [text for text in texts if text.strip()]
     if isinstance(content, dict):
         return [str(value) for value in content.values() if isinstance(value, str) and value.strip()]
@@ -127,7 +145,13 @@ def contains_placeholder(text: str) -> bool:
 
 
 def has_metric(text: str) -> bool:
-    return bool(re.search(r"\b\d+(?:\.\d+)?\s*(?:%|percent|users?|hours?|days?|teams?|applications?|defects?|records?)\b", text, flags=re.IGNORECASE))
+    return bool(
+        re.search(
+            r"\b\d+(?:\.\d+)?\s*(?:%|percent\b|users?\b|hours?\b|days?\b|teams?\b|applications?\b|defects?\b|records?\b)",
+            text,
+            flags=re.IGNORECASE,
+        )
+    )
 
 
 def metric_supported(text: str, evidence_ids: list[str], evidence_index: list[ProfileEvidenceItem]) -> bool:
@@ -138,6 +162,113 @@ def metric_supported(text: str, evidence_ids: list[str], evidence_index: list[Pr
     source_text = " ".join(evidence_by_id[eid].original_text for eid in evidence_ids if eid in evidence_by_id)
     source_numbers = set(re.findall(r"\b\d+(?:\.\d+)?\b", source_text))
     return generated_numbers <= source_numbers
+
+
+def validate_experience_bullets(
+    section,
+    evidence_index: list[ProfileEvidenceItem],
+    evidence_ids: set[str],
+    safe_requirement_ids: set[str],
+    adjacent_requirement_ids: set[str],
+    unmatched_requirement_ids: set[str],
+    errors: list[ResumeValidationIssue],
+    warnings: list[ResumeValidationIssue],
+    rejected: list[str],
+) -> None:
+    for entry in section.content if isinstance(section.content, list) else []:
+        if not isinstance(entry, dict):
+            continue
+        for bullet in entry.get("bullets", []):
+            if not isinstance(bullet, dict):
+                continue
+            bullet_id = str(bullet.get("bulletId") or section.section_id)
+            current = bullet_text(bullet)
+            generated = bullet_generated_text(bullet)
+            bullet_evidence_ids = [str(value) for value in bullet.get("supportingEvidenceIds", []) if value]
+            bullet_requirement_ids = [str(value) for value in bullet.get("supportedRequirementIds", []) if value]
+            bullet["userEdited"] = bullet_is_user_edited(current, generated)
+            bullet_warnings: list[str] = []
+            bullet_errors: list[ResumeValidationIssue] = []
+            has_bullet_provenance = bool(bullet_evidence_ids or bullet_requirement_ids)
+
+            if bullet.get("validationStatus") == "validated" and not bullet_evidence_ids:
+                bullet_errors.append(issue("missing_bullet_evidence", "error", "Validated bullet has no supporting evidence IDs.", section.section_id, bullet_id))
+            if not has_bullet_provenance and bullet.get("validationStatus") != "validated":
+                bullet_warnings.append("Bullet has no bullet-level provenance; validation required before treating it as evidence-backed.")
+            missing_evidence = [evidence_id for evidence_id in bullet_evidence_ids if evidence_id not in evidence_ids]
+            if missing_evidence:
+                bullet_errors.append(issue("unknown_bullet_evidence", "error", "Bullet references unknown evidence IDs.", section.section_id, bullet_id, missing_evidence))
+            invalid_requirements = [req_id for req_id in bullet_requirement_ids if req_id not in safe_requirement_ids]
+            if invalid_requirements:
+                code = "unsafe_bullet_requirement"
+                if any(req_id in adjacent_requirement_ids for req_id in invalid_requirements):
+                    code = "adjacent_requirement_claimed"
+                if any(req_id in unmatched_requirement_ids for req_id in invalid_requirements):
+                    code = "unmatched_requirement_claimed"
+                bullet_errors.append(issue(code, "error", "Bullet references a requirement that is not safe for generation.", section.section_id, bullet_id))
+
+            if current and bullet_evidence_ids:
+                bullet_errors.extend(validate_bullet_claims(section.section_id, bullet_id, current, bullet_evidence_ids, evidence_index))
+
+            if bullet_errors:
+                bullet["validationStatus"] = "rejected"
+                rejected.append(bullet_id)
+                errors.extend(bullet_errors)
+                bullet_warnings.extend(error.message for error in bullet_errors)
+            elif bullet_warnings:
+                bullet["validationStatus"] = "warning"
+                warnings.append(issue("bullet_warning", "warning", bullet_warnings[0], section.section_id, bullet_id, bullet_evidence_ids))
+            else:
+                bullet["validationStatus"] = "validated"
+            bullet["warnings"] = sorted(set(bullet_warnings))
+
+
+def validate_bullet_claims(
+    section_id: str,
+    bullet_id: str,
+    text: str,
+    evidence_ids: list[str],
+    evidence_index: list[ProfileEvidenceItem],
+) -> list[ResumeValidationIssue]:
+    errors: list[ResumeValidationIssue] = []
+    normalized = normalize_text(text)
+    evidence_text = normalize_text(" ".join(item.original_text for item in evidence_index if item.evidence_id in evidence_ids))
+
+    if has_unsupported_phrase(normalized, evidence_text, ("led", "managed", "mentored", "supervised", "directed", "owned", "headed")):
+        errors.append(issue("unsupported_leadership_claim", "error", "Edited bullet contains unsupported leadership or ownership wording.", section_id, bullet_id, evidence_ids))
+    if has_unsupported_phrase(normalized, evidence_text, ("architecture", "architected", "greenfield", "system design", "enterprise-wide")):
+        errors.append(issue("unsupported_architecture_claim", "error", "Edited bullet contains unsupported architecture or scale wording.", section_id, bullet_id, evidence_ids))
+    if has_unsupported_phrase(normalized, evidence_text, ("epic bridges", "hl7", "fhir", "certified", "certification")):
+        errors.append(issue("unsupported_product_or_certification", "error", "Edited bullet contains unsupported product, standard, or certification wording.", section_id, bullet_id, evidence_ids))
+    if has_unsupported_phrase(normalized, evidence_text, ("kubernetes", "azure api management", "microservices", "react", "aws", "azure")):
+        errors.append(issue("unsupported_technology_claim", "error", "Edited bullet contains a technology not present in supporting evidence.", section_id, bullet_id, evidence_ids))
+    if has_compound_integration_claim(normalized) and not has_compound_integration_claim(evidence_text):
+        errors.append(issue("unsupported_compound_relationship", "error", "Edited bullet claims an integration relationship not present in supporting evidence.", section_id, bullet_id, evidence_ids))
+    if has_metric(text) and not metric_supported(text, evidence_ids, evidence_index):
+        errors.append(issue("unsupported_metric", "error", "Edited bullet contains a metric not present in supporting evidence.", section_id, bullet_id, evidence_ids))
+    return errors
+
+
+def bullet_is_user_edited(current: str, generated: str) -> bool:
+    if generated:
+        return normalized_bullet_text(current) != normalized_bullet_text(generated)
+    return bool(current.strip())
+
+
+def normalized_bullet_text(value: str) -> str:
+    return re.sub(r"\s+", " ", value).strip()
+
+
+def has_unsupported_phrase(text: str, evidence_text: str, phrases: tuple[str, ...]) -> bool:
+    return any(phrase in text and phrase not in evidence_text for phrase in phrases)
+
+
+def has_compound_integration_claim(text: str) -> bool:
+    return (
+        "react" in text
+        and ("asp.net core" in text or "asp net core" in text or "api" in text)
+        and any(term in text for term in ("integrated with", "connected to", "consumed", "calling", "wired to"))
+    )
 
 
 def normalize_text(value: str) -> str:

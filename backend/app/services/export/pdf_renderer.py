@@ -20,7 +20,7 @@ def render_pdf(model: ResumeDocumentModel, template: ResumeExportTemplate, *, pa
     from reportlab.lib.pagesizes import A4, letter
     from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
     from reportlab.lib.units import inch
-    from reportlab.platypus import HRFlowable, ListFlowable, ListItem, Paragraph, SimpleDocTemplate, Spacer
+    from reportlab.platypus import HRFlowable, Paragraph, SimpleDocTemplate, Spacer
 
     page = A4 if paper_size.lower() == "a4" else letter
     top, bottom, left, right = template.margins

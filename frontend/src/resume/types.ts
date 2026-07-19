@@ -1,14 +1,52 @@
+export type AtsCoverageItem = {
+  requirementId: string;
+  requirementValue: string;
+  category: string;
+  classification: string;
+};
+
+export type AtsCoverageBreakdown = {
+  supportedAndCovered: AtsCoverageItem[];
+  supportedButNotRepresented: AtsCoverageItem[];
+  adjacentUnsupported: AtsCoverageItem[];
+  unmatched: AtsCoverageItem[];
+  suggestedExcluded: AtsCoverageItem[];
+};
+
+export type AtsAnalysisBreakdown = {
+  keywordMatch: number;
+  formatting: number;
+  readability: number;
+  matchedKeywords: string[];
+  missingKeywords: string[];
+};
+
+export type ResumeSuggestion = { text: string; points: number };
+
+export type AtsAnalysis = {
+  score: number;
+  breakdown: AtsAnalysisBreakdown;
+  coverage: AtsCoverageBreakdown;
+  suggestions: ResumeSuggestion[];
+};
+
+export type GenerationMetadata = {
+  model: string | null;
+  durationMs: number;
+  generatedAt: string;
+  pipelineVersion: string;
+};
+
 export type GeneratedResumeResponse = {
+  resumeId?: string;
+  atsAnalysis?: AtsAnalysis;
+  generationMetadata?: GenerationMetadata;
   resume: GeneratedResume;
   atsScore: number;
-  breakdown: {
-    keywordMatch: number;
-    formatting: number;
-    readability: number;
-    matchedKeywords: string[];
-    missingKeywords: string[];
+  breakdown: AtsAnalysisBreakdown & {
+    coverage?: AtsCoverageBreakdown;
   };
-  suggestions: Array<{ text: string; points: number }>;
+  suggestions: ResumeSuggestion[];
   aiMetrics?: {
     generationTimeMs: number;
     aiCost: number;
@@ -21,35 +59,6 @@ export type GeneratedResumeResponse = {
   structuredResume?: StructuredGeneratedResume | null;
   validationResult?: ResumeValidationResult | null;
   persistedResumeId?: string;
-  semanticPlan?: {
-    exactKeywords: Array<{ term: string; category: string; priority: string; source: string }>;
-    semanticKeywords: Array<{ term: string; category: string; priority: string; source: string }>;
-    requirementGroups: Array<{
-      name: string;
-      category: string;
-      priority: string;
-      exactKeywords: string[];
-      semanticKeywords: string[];
-      relatedConcepts: string[];
-    }>;
-    candidateEvidenceMap: Array<{
-      requirement: string;
-      confidence: "strong" | "partial" | "missing" | string;
-      evidence: string[];
-      supportedKeywords: string[];
-      missingKeywords: string[];
-      suggestedResumeUse: string[];
-    }>;
-    missingRequirements: string[];
-    weakRequirements: string[];
-    atsKeywordPlan: Array<{
-      keyword: string;
-      priority: string;
-      targetSections: string[];
-      confidence: "strong" | "partial" | "missing" | string;
-      guidance: string;
-    }>;
-  };
 };
 
 export type KeywordSourceType = "explicit" | "inferred" | "suggested";
@@ -92,6 +101,18 @@ export type JobAnalysisResponse = {
     experience: string;
     domain: string;
   };
+  technicalRequirements?: TypedJobRequirement[];
+  responsibilityRequirements?: TypedJobRequirement[];
+  experienceRequirements?: TypedJobRequirement[];
+  educationRequirements?: TypedJobRequirement[];
+  certificationRequirements?: TypedJobRequirement[];
+  leadershipRequirements?: TypedJobRequirement[];
+  softSkillRequirements?: TypedJobRequirement[];
+  domainRequirements?: TypedJobRequirement[];
+  inferredRequirements?: TypedJobRequirement[];
+  excludedNoiseTerms?: string[];
+  analysisWarnings?: string[];
+  normalizedRequirements?: NormalizedRequirements;
   keywords: JobKeywordAnalysisItem[];
   explicitKeywords: JobKeywordAnalysisItem[];
   inferredKeywords: JobKeywordAnalysisItem[];
@@ -109,6 +130,32 @@ export type JobAnalysisResponse = {
   noiseTermsToExclude: string[];
   totalExtractedKeywords: number;
   analysisHash: string;
+};
+
+export type TypedJobRequirement = {
+  requirementId: string;
+  canonicalTerm: string;
+  originalTerms: string[];
+  category: string;
+  requirementLevel: "required" | "preferred" | "responsibility" | "inferred";
+  priority: "critical" | "high" | "medium" | "low";
+  explicit: boolean;
+  confidence: number;
+  evidenceText: string;
+  sourceSentence: string;
+  reason: string;
+};
+
+export type NormalizedRequirements = {
+  technicalRequirements: TypedJobRequirement[];
+  responsibilityRequirements: TypedJobRequirement[];
+  experienceRequirements: TypedJobRequirement[];
+  educationRequirements: TypedJobRequirement[];
+  certificationRequirements: TypedJobRequirement[];
+  leadershipRequirements: TypedJobRequirement[];
+  softSkillRequirements: TypedJobRequirement[];
+  domainRequirements: TypedJobRequirement[];
+  inferredRequirements: TypedJobRequirement[];
 };
 
 export type MatchClassification = "exact" | "normalized" | "adjacent" | "unmatched";
@@ -169,10 +216,116 @@ export type ProfileMatchSummary = {
   warnings: string[];
 };
 
+export type SummaryIntelligence = {
+  summary: string;
+  selectedTechnologies: string[];
+  selectedCapabilities: string[];
+  usedEvidenceIds: string[];
+  excludedJdTerms: string[];
+  riskFlags: string[];
+  validationStatus: "valid" | "invalid" | "fallback";
+  validationWarnings: string[];
+  generationMode: "openai" | "retry" | "deterministic_fallback" | string;
+  model: string;
+  profileId: string;
+  profileVersion: number;
+  profileHash: string;
+  jobDescriptionHash: string;
+  targetRole: string;
+  targetCompany: string;
+  level: string;
+  promptVersion?: string;
+  modelConfigurationHash?: string;
+  createdAt: string;
+};
+
+export type ExperiencePromptInput = {
+  experienceId: string;
+  roleContext: {
+    roleTitle: string;
+    companyName: string;
+    clientName: string | null;
+    isCurrentRole: boolean;
+    roleFamily: string;
+  };
+  targetContext: {
+    targetRole: string;
+    targetCompany: string;
+    level: string;
+    targetThemes: string[];
+  };
+  approvedEvidence: Array<{
+    evidenceId: string;
+    evidenceType: string;
+    text: string;
+    sourceRecordId: string;
+    projectId: string | null;
+  }>;
+  approvedTechnologies: Array<{ name: string; evidenceIds: string[] }>;
+  approvedCapabilities: Array<{ name: string; evidenceIds: string[]; supportedRequirementIds: string[] }>;
+  approvedMetrics: Array<{ value: string; context: string; evidenceIds: string[] }>;
+  linkedProjects: Array<{ projectId: string; projectName: string; evidenceIds: string[]; technologies: string[]; approvedFacts: string[] }>;
+  bulletThemes: string[];
+  supportedRequirementIds: string[];
+  excludedTerms: string[];
+  writingRules: {
+    bulletCount: number;
+    maximumWordsPerBullet: number;
+    useOnlyApprovedEvidence: boolean;
+    doNotInventMetrics: boolean;
+    doNotInventTechnologies: boolean;
+    doNotInventLeadership: boolean;
+    doNotInventArchitectureOwnership: boolean;
+    doNotUseUnsupportedJdTerms: boolean;
+    startWithActionVerb: boolean;
+    avoidFirstPerson: boolean;
+    avoidDuplicateOpenings: boolean;
+    avoidGenericFiller: boolean;
+  };
+  plannerVersion: string;
+  promptVersion: string;
+  validationResult: { isValid: boolean; codes: string[]; warnings: string[] };
+};
+
+export type ExperienceIntelligence = {
+  plannerVersion: string;
+  roleFamily: string;
+  roles: unknown[];
+  experiencePromptInputs: ExperiencePromptInput[];
+  roleIntelligence?: Array<{
+    experienceId: string;
+    bullets: GeneratedResumeBullet[];
+    generationMode: string;
+    model: string;
+    promptVersion: string;
+      validationStatus: string;
+      warnings: string[];
+      modelConfigurationHash?: string;
+    }>;
+    writerPromptVersion?: string;
+    writerModel?: string;
+    modelConfigurationHash?: string;
+    overallValidationStatus?: string;
+  createdAt?: string;
+  warnings: string[];
+  validationStatus: string;
+};
+
 export type ProfileMatchResponse = {
   matchSummary: ProfileMatchSummary;
   cacheVersion: string;
   cacheHit: boolean;
+  profileId?: string;
+  profileVersion?: number;
+  profileUpdatedAt?: string;
+  profileContentHash?: string;
+  matchingAlgorithmVersion?: string;
+  packageId?: string;
+  jobDescriptionHash?: string;
+  summaryIntelligence?: SummaryIntelligence | null;
+  experienceIntelligence?: ExperienceIntelligence | null;
+  validationStatus?: string;
+  validationWarnings?: string[];
 };
 
 export type GeneratedResumeSection = {
@@ -191,9 +344,31 @@ export type GeneratedResumeSection = {
   };
 };
 
+export type GeneratedResumeBullet = {
+  bulletId: string;
+  order: number;
+  generatedText: string;
+  currentText: string;
+  userEdited: boolean;
+  supportedRequirementIds: string[];
+  supportingEvidenceIds: string[];
+  validationStatus: string;
+  warnings: string[];
+};
+
 export type StructuredGeneratedResume = {
   resumeId: string;
   userId: string;
+  resumeHeader?: {
+    fullName?: string;
+    currentTitle?: string;
+    email?: string;
+    phone?: string;
+    location?: string;
+    linkedinUrl?: string;
+    githubUrl?: string;
+    portfolioUrl?: string;
+  };
   resumeName: string;
   targetJobTitle: string;
   targetCompany: string;
@@ -223,29 +398,53 @@ export type ResumeValidationResult = {
   rejectedContentIds: string[];
 };
 
+export type SkillCategory = {
+  category: string;
+  categoryId?: string;
+  categoryName?: string;
+  order?: number;
+  items: string[];
+  migrationReviewRequired?: boolean;
+  legacyUnparsed?: string;
+};
+
 export type GeneratedResume = {
   name: string;
+  firstName?: string;
+  lastName?: string;
   title: string;
   contact: {
     phone?: string;
     email?: string;
     location?: string;
+    locationData?: StructuredLocation;
     linkedin?: string;
     github?: string;
     portfolio?: string;
   };
   summary?: string;
-  skills: Array<{ category: string; items: string[] }>;
+  skills: SkillCategory[];
   experience: Array<{
     experienceId?: string;
     company: string;
+    clientName?: string | null;
     role: string;
     location?: string;
+    locationData?: StructuredLocation;
     startDate?: string;
+    startDateData?: ProfileExperienceDate;
     endDate?: string;
+    endDateData?: ProfileExperienceDate | null;
+    isCurrentRole?: boolean;
     rawNotes?: string;
     bullets: string[];
     metricFlags?: string[];
+    responsibilities?: string[];
+    achievements?: string[];
+    technologies?: string[];
+    metrics?: ExperienceMetric[];
+    legacyNotes?: string;
+    migrationReviewRequired?: boolean;
   }>;
   projects: Array<{
     projectId?: string;
@@ -254,6 +453,7 @@ export type GeneratedResume = {
     link?: string;
     bullets: string[];
     technologies: string[];
+    linkedExperienceIds?: string[];
   }>;
   education: Array<{
     educationId?: string;
@@ -264,6 +464,23 @@ export type GeneratedResume = {
     gpa?: string;
   }>;
   certifications: Array<{ certificationId?: string; name: string; issuer?: string; issuedDate?: string; expiryDate?: string }>;
+};
+
+export type StructuredLocation = {
+  city: string;
+  state?: string | null;
+  country: string;
+};
+
+export type ProfileExperienceDate = {
+  month: number;
+  year: number;
+};
+
+export type ExperienceMetric = {
+  metricId: string;
+  label: string;
+  value: string;
 };
 
 export type CandidateProfileRecord = {
@@ -277,6 +494,96 @@ export type CandidateProfileRecord = {
   contentHash: string;
   createdAt: string;
   updatedAt: string;
+};
+
+export type CandidateLocationSnapshot = {
+  city: string;
+  state?: string | null;
+  country: string;
+  displayValue: string;
+};
+
+export type CandidateSnapshot = {
+  firstName: string;
+  lastName: string;
+  currentTitle: string;
+  email: string;
+  phone: string;
+  location: CandidateLocationSnapshot;
+};
+
+export type SkillCategorySnapshot = {
+  categoryId: string;
+  categoryName: string;
+  order: number;
+  items: string[];
+};
+
+export type ExperienceDateSnapshot = {
+  month: number;
+  year: number;
+  displayValue: string;
+};
+
+export type WorkExperienceSnapshot = {
+  experienceId: string;
+  companyName: string;
+  clientName: string | null;
+  roleTitle: string;
+  location: CandidateLocationSnapshot;
+  startDate: ExperienceDateSnapshot;
+  endDate: ExperienceDateSnapshot | null;
+  isCurrentRole: boolean;
+};
+
+export type ResumePreferencesSnapshot = {
+  templateId: string;
+  headerVisibility: {
+    fullName: boolean;
+    currentTitle: boolean;
+    email: boolean;
+    phone: boolean;
+    location: boolean;
+    linkedinUrl: boolean;
+    githubUrl: boolean;
+    portfolioUrl: boolean;
+  };
+  sectionVisibility: {
+    summary: boolean;
+    skills: boolean;
+    experience: boolean;
+    projects: boolean;
+    education: boolean;
+    certifications: boolean;
+  };
+};
+
+export type ResumeGenerationSettingsSnapshot = {
+  maximumPages: number;
+  bulletsPerRecentRole: number;
+  bulletsPerOlderRole: number;
+  includeProjects: boolean;
+  includeCertifications: boolean;
+  includeUnmatchedKeywords: boolean;
+  writingStyle: string;
+};
+
+export type GenerateResumeRequestPayload = {
+  profileId: string;
+  profileVersion: number;
+  resumeIntelligencePackageId?: string;
+  candidate: CandidateSnapshot;
+  skills: SkillCategorySnapshot[];
+  workExperience: WorkExperienceSnapshot[];
+  job: {
+    description: string;
+    targetRole: string;
+    targetCompany: string | null;
+    level: string | null;
+  };
+  jobAnalysis?: JobAnalysisResponse | null;
+  resumePreferences: ResumePreferencesSnapshot;
+  generationSettings: ResumeGenerationSettingsSnapshot;
 };
 
 export type StructuredResumeRecord = {

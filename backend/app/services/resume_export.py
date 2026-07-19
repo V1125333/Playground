@@ -1,6 +1,8 @@
 from html import escape
 from io import BytesIO
 
+from reportlab.platypus import Paragraph
+
 from app.schemas.resume import ResumeContent
 
 
@@ -14,8 +16,7 @@ def resume_filename(resume: ResumeContent, extension: str) -> str:
 def build_docx(resume: ResumeContent) -> bytes:
     from docx import Document
     from docx.enum.style import WD_STYLE_TYPE
-    from docx.enum.text import WD_ALIGN_PARAGRAPH, WD_TAB_ALIGNMENT
-    from docx.oxml import OxmlElement
+    from docx.enum.text import WD_ALIGN_PARAGRAPH
     from docx.oxml.ns import qn
     from docx.shared import Inches, Pt
 
@@ -311,6 +312,3 @@ def bullet_row(text: str, bullet_style, marker_style):
             ("LINEBELOW", (0, 0), (-1, -1), 0, colors.white),
         ]),
     )
-
-
-from reportlab.platypus import Paragraph

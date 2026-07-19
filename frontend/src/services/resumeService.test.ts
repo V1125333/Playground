@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { exportResumeDocx, exportResumePdf, generateResume, saveResumeVersion, updateResume } from "./resumeService";
-import { structuredResumeFixture } from "../test/fixtures/resume";
+import { exportResumeDocx, exportResumePdf, generateResume, normalizeGenerateResumeResponse, saveResumeVersion, updateResume } from "./resumeService";
+import { generatedResumeResponseFixture, structuredResumeFixture } from "../test/fixtures/resume";
+import { jobAnalysisFixture } from "../test/fixtures/jobAnalysis";
 
 const token = "service-token";
 
@@ -8,18 +9,65 @@ describe("resumeService", () => {
   beforeEach(() => {
     globalThis.fetch = vi.fn().mockResolvedValue({
       ok: true,
-      json: async () => ({ ok: true }),
+      json: async () => generatedResumeResponseFixture,
     }) as unknown as typeof fetch;
   });
 
   it("generateResume sends the persisted profile payload without full profile data", async () => {
     await generateResume(token, {
       profileId: "profile-123",
-      job_description: "JD",
-      target_role: "Software Engineer IV",
-      target_company: "Velera",
-      templateId: "classic-ats",
-      generationSettings: { maximumPages: 2 },
+      profileVersion: 3,
+      candidate: {
+        firstName: "Test",
+        lastName: "Candidate",
+        currentTitle: "Software Engineer",
+        email: "test@example.com",
+        phone: "555-0100",
+        location: { city: "Austin", state: "TX", country: "USA", displayValue: "Austin, TX, USA" },
+      },
+      skills: [{ categoryId: "skill-category-0-languages", categoryName: "Languages", order: 0, items: ["C#"] }],
+      workExperience: [{
+        experienceId: "exp-1",
+        companyName: "Company",
+        clientName: null,
+        roleTitle: "Software Engineer",
+        location: { city: "Austin", state: "TX", country: "USA", displayValue: "Austin, TX, USA" },
+        startDate: { month: 1, year: 2024, displayValue: "2024-01" },
+        endDate: null,
+        isCurrentRole: true,
+      }],
+      job: { description: "JD", targetRole: "Software Engineer IV", targetCompany: "Velera", level: "Senior" },
+      jobAnalysis: jobAnalysisFixture,
+      resumePreferences: {
+        templateId: "classic-ats",
+        headerVisibility: {
+          fullName: true,
+          currentTitle: true,
+          email: true,
+          phone: true,
+          location: true,
+          linkedinUrl: false,
+          githubUrl: false,
+          portfolioUrl: false,
+        },
+        sectionVisibility: {
+          summary: true,
+          skills: true,
+          experience: true,
+          projects: true,
+          education: true,
+          certifications: true,
+        },
+      },
+      generationSettings: {
+        maximumPages: 2,
+        bulletsPerRecentRole: 5,
+        bulletsPerOlderRole: 4,
+        includeProjects: true,
+        includeCertifications: true,
+        includeUnmatchedKeywords: false,
+        writingStyle: "balanced",
+      },
     });
 
     expect(fetch).toHaveBeenCalledWith("/api/resumes/generate", expect.objectContaining({
@@ -29,13 +77,75 @@ describe("resumeService", () => {
     const body = JSON.parse(String((vi.mocked(fetch).mock.calls[0][1] as RequestInit).body));
     expect(body).toMatchObject({
       profileId: "profile-123",
-      job_description: "JD",
-      target_role: "Software Engineer IV",
-      target_company: "Velera",
-      templateId: "classic-ats",
-      generationSettings: { maximumPages: 2 },
+      profileVersion: 3,
+      job: { description: "JD", targetRole: "Software Engineer IV", targetCompany: "Velera", level: "Senior" },
+      resumePreferences: { headerVisibility: { linkedinUrl: false, githubUrl: false, portfolioUrl: false } },
+      generationSettings: { maximumPages: 2, writingStyle: "balanced" },
     });
     expect(body).not.toHaveProperty("candidate_profile");
+    expect(body).not.toHaveProperty("job_description");
+  });
+
+  it("normalizes new grouped response fields as the authoritative frontend model", () => {
+    const normalized = normalizeGenerateResumeResponse({
+      ...generatedResumeResponseFixture,
+      atsScore: 1,
+      breakdown: {
+        keywordMatch: 1,
+        formatting: 1,
+        readability: 1,
+        matchedKeywords: [],
+        missingKeywords: [],
+        coverage: {
+          supportedAndCovered: [],
+          supportedButNotRepresented: [],
+          adjacentUnsupported: [],
+          unmatched: [],
+          suggestedExcluded: [],
+        },
+      },
+      suggestions: [{ text: "legacy stale suggestion", points: 1 }],
+      persistedResumeId: "legacy-id",
+    });
+
+    expect(normalized.resumeId).toBe("resume-123");
+    expect(normalized.persistedResumeId).toBe("resume-123");
+    expect(normalized.atsScore).toBe(normalized.atsAnalysis?.score);
+    expect(normalized.breakdown.keywordMatch).toBe(normalized.atsAnalysis?.breakdown.keywordMatch);
+    expect(normalized.breakdown.coverage).toEqual(normalized.atsAnalysis?.coverage);
+    expect(normalized.suggestions).toEqual(normalized.atsAnalysis?.suggestions);
+    expect(normalized.generationMetadata?.pipelineVersion).toBe("generation-v1");
+    expect(normalized.aiMetrics?.generationTimeMs).toBe(normalized.generationMetadata?.durationMs);
+  });
+
+  it("normalizes legacy generate responses when grouped fields are absent", () => {
+    const legacy = {
+      ...generatedResumeResponseFixture,
+      resumeId: undefined,
+      atsAnalysis: undefined,
+      generationMetadata: undefined,
+      aiMetrics: {
+        generationTimeMs: 424,
+        aiCost: 0.02,
+        tokensUsed: 100,
+        modelsUsed: ["legacy-model"],
+        cacheUsed: false,
+        atsScore: 72,
+        validationScore: 100,
+      },
+    };
+
+    const normalized = normalizeGenerateResumeResponse(legacy);
+
+    expect(normalized.resumeId).toBe("resume-123");
+    expect(normalized.atsAnalysis?.score).toBe(72);
+    expect(normalized.atsAnalysis?.breakdown.keywordMatch).toBe(72);
+    expect(normalized.generationMetadata).toEqual({
+      model: "legacy-model",
+      durationMs: 424,
+      generatedAt: "2026-07-01T10:00:00.000Z",
+      pipelineVersion: "generation-v1",
+    });
   });
 
   it("updateResume targets the correct resume endpoint with structured JSON", async () => {

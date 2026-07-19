@@ -227,7 +227,7 @@ TECH_ALIASES = {
     "mongodb": ["mongodb", "mongo db"],
     "mvc": ["mvc"],
     "ms-test": ["ms-test", "mstest", "ms test"],
-    "ms sql server": ["ms sql server", "sql server", "mssql", "t-sql", "tsql"],
+    "ms sql server": ["ms sql server", "microsoft sql server", "microsoft sql", "sql server", "mssql", "t-sql", "tsql"],
     "mysql": ["mysql", "my sql"],
     "next.js": ["next.js", "next js", "nextjs"],
     "node.js": ["node.js", "node js", "node"],
@@ -239,7 +239,7 @@ TECH_ALIASES = {
     "postman": ["postman"],
     "python": ["python"],
     "react": ["react", "react.js", "reactjs"],
-    "rest api": ["rest api", "restful api", "restful"],
+    "rest api": ["rest api", "rest apis", "restful api", "restful apis", "web api", "web apis", "api", "apis", "rest", "restful"],
     "software development": ["software development", "application development", "software engineering", "enterprise application development"],
     "ssis": ["ssis", "sql server integration services"],
     "ssrs": ["ssrs", "sql server reporting services"],
@@ -1350,8 +1350,13 @@ def display_keyword(keyword: str) -> str:
 
 def canonical_keyword(display_value: str) -> str:
     normalized = normalize_text(display_value).replace("/", " ")
-    for canonical in TECH_ALIASES:
-        if normalized in {canonical, normalize_text(display_keyword(canonical)).replace("/", " ")}:
+    for canonical, aliases in TECH_ALIASES.items():
+        alias_keys = {
+            canonical,
+            normalize_text(display_keyword(canonical)).replace("/", " "),
+            *{normalize_text(alias).replace("/", " ") for alias in aliases},
+        }
+        if normalized in alias_keys:
             return canonical
     return normalize_text(display_value)
 

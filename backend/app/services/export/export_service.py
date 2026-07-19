@@ -5,11 +5,11 @@ from dataclasses import dataclass
 from enum import StrEnum
 
 from app.schemas.resume import ProfileEvidenceItem, ProfileMatchSummary, ResumeValidationResult, StructuredResumeRecord
-from app.services.export.document_model import ResumeDocumentModel, build_document_model
+from app.services.export.document_model import build_document_model
 from app.services.export.docx_renderer import render_docx
 from app.services.export.filename import build_export_filename
 from app.services.export.pdf_renderer import render_pdf
-from app.services.export.template_registry import TemplateNotFoundError, resolve_template
+from app.services.export.template_registry import resolve_template
 from app.services.resume_validator import validate_structured_resume
 
 

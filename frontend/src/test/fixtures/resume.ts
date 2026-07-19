@@ -162,6 +162,7 @@ export const resumeRecordFixture: StructuredResumeRecord = {
 };
 
 export const generatedResumeResponseFixture: GeneratedResumeResponse = {
+  resumeId: "resume-123",
   resume: {
     name: "Venu Madhav Pendurthi",
     title: "Senior .NET Developer",
@@ -180,8 +181,48 @@ export const generatedResumeResponseFixture: GeneratedResumeResponse = {
     readability: 100,
     matchedKeywords: ["C#", ".NET"],
     missingKeywords: ["Azure", "Trading"],
+    coverage: {
+      supportedAndCovered: [],
+      supportedButNotRepresented: [],
+      adjacentUnsupported: [],
+      unmatched: [],
+      suggestedExcluded: [],
+    },
   },
   suggestions: [],
+  atsAnalysis: {
+    score: 72,
+    breakdown: {
+      keywordMatch: 72,
+      formatting: 100,
+      readability: 100,
+      matchedKeywords: ["C#", ".NET"],
+      missingKeywords: ["Azure", "Trading"],
+    },
+    coverage: {
+      supportedAndCovered: [],
+      supportedButNotRepresented: [],
+      adjacentUnsupported: [],
+      unmatched: [],
+      suggestedExcluded: [],
+    },
+    suggestions: [],
+  },
+  generationMetadata: {
+    model: null,
+    durationMs: 0,
+    generatedAt: "2026-07-01T10:00:00.000Z",
+    pipelineVersion: "generation-v1",
+  },
+  aiMetrics: {
+    generationTimeMs: 0,
+    aiCost: 0,
+    tokensUsed: 0,
+    modelsUsed: [],
+    cacheUsed: false,
+    atsScore: 72,
+    validationScore: 100,
+  },
   structuredResume: structuredResumeFixture,
   validationResult: { isValid: true, errors: [], warnings: [], rejectedContentIds: [] },
   persistedResumeId: "resume-123",

@@ -15,10 +15,8 @@ from app.services.export.template_registry import ResumeExportTemplate
 
 def render_docx(model: ResumeDocumentModel, template: ResumeExportTemplate, *, paper_size: str = "letter") -> bytes:
     from docx import Document
-    from docx.enum.style import WD_STYLE_TYPE
     from docx.enum.text import WD_ALIGN_PARAGRAPH
-    from docx.oxml.ns import qn
-    from docx.shared import Inches, Pt, RGBColor
+    from docx.shared import Inches
 
     document = Document()
     section = document.sections[0]

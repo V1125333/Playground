@@ -123,7 +123,7 @@ def test_original_financial_services_jd_grounded_extraction() -> None:
         "Trading",
         "Valuation",
         "Research Applications",
-        "front-office applications",
+        "Front-Office Applications",
         "Testing Best Practices",
         "Version Control",
         "CI/CD",
@@ -138,8 +138,6 @@ def test_original_financial_services_jd_grounded_extraction() -> None:
         "Troubleshooting",
         "Problem Solving",
         "Quality Improvement",
-        "Bachelor's Degree",
-        "7+ Years of Experience",
     }
     unsupported = {
         "Azure",

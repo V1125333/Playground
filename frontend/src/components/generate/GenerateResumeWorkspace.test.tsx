@@ -87,7 +87,7 @@ async function fillJobAndAnalyze(user = userEvent.setup()) {
   await user.type(screen.getByLabelText(/company name/i), "Morgan Stanley");
   await user.clear(screen.getByPlaceholderText(/paste the full job description/i));
   await user.type(screen.getByPlaceholderText(/paste the full job description/i), jdText);
-  await user.click(screen.getByRole("button", { name: /analyze job/i }));
+  await user.click(screen.getByRole("button", { name: /analyze & match/i }));
   await screen.findByText("C#");
   return user;
 }
@@ -106,7 +106,7 @@ describe("GenerateResumeWorkspace", () => {
 
     expect((await screen.findAllByText(/complete your profile before generating/i)).length).toBeGreaterThan(0);
     expect(screen.getByRole("link", { name: /go to profile/i })).toHaveAttribute("href", "/profile");
-    expect(screen.getByRole("button", { name: /analyze job/i })).toBeDisabled();
+    expect(screen.getByRole("button", { name: /analyze & match/i })).toBeDisabled();
     expect(screen.getByRole("button", { name: /generate resume/i })).toBeDisabled();
   });
 
@@ -114,6 +114,7 @@ describe("GenerateResumeWorkspace", () => {
     renderWorkspace();
 
     expect(await screen.findByLabelText(/target job title/i)).toBeInTheDocument();
+    expect(screen.queryByText(/^Saved$/)).not.toBeInTheDocument();
     expect(resumeService.listResumes).toHaveBeenCalledTimes(1);
     expect(resumeService.generateResume).not.toHaveBeenCalled();
   });
@@ -134,11 +135,60 @@ describe("GenerateResumeWorkspace", () => {
     expect(resumeService.matchProfile).toHaveBeenCalledWith(token, {
       profileId: "profile-123",
       jobAnalysis: jobAnalysisFixture,
+      jobDescription: jdText,
+      targetRole: "Software Engineer IV",
+      targetCompany: "Morgan Stanley",
+      level: "Senior",
     });
     expect(screen.getByPlaceholderText(/paste the full job description/i)).toHaveValue(jdText);
+    expect(screen.getByText("Profile match 72%")).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Profile Match" })).toBeInTheDocument();
+    expect(screen.getByText("Profile-to-job match")).toBeInTheDocument();
+    expect(screen.getByText("Analyze the job description and compare it with your saved profile.")).toBeInTheDocument();
+    expect(screen.getByText(/This score compares the job requirements with evidence in your saved profile/i)).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Summary Intelligence" })).toBeInTheDocument();
+    expect(screen.getByText(/maintainable API delivery/i)).toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "Resume ATS Score" })).not.toBeInTheDocument();
     expect(screen.getAllByText(/exact or normalized match/i).length).toBeGreaterThan(0);
     expect(screen.getAllByText(/transferable, not a direct match/i).length).toBeGreaterThan(0);
     expect(screen.getAllByText(/not found in profile/i).length).toBeGreaterThan(0);
+  });
+
+  it("ignores stale analysis responses when the job input changes while analysis is running", async () => {
+    let resolveAnalyze: (value: typeof jobAnalysisFixture) => void = () => {};
+    vi.mocked(resumeService.analyzeJob).mockReturnValueOnce(new Promise((resolve) => {
+      resolveAnalyze = resolve;
+    }));
+    const user = userEvent.setup();
+    renderWorkspace();
+
+    await user.clear(screen.getByLabelText(/target job title/i));
+    await user.type(screen.getByLabelText(/target job title/i), "Software Engineer IV");
+    await user.clear(screen.getByPlaceholderText(/paste the full job description/i));
+    await user.type(screen.getByPlaceholderText(/paste the full job description/i), jdText);
+    await user.click(screen.getByRole("button", { name: /analyze & match/i }));
+    fireEvent.change(screen.getByPlaceholderText(/paste the full job description/i), {
+      target: { value: `${jdText} Updated after analyze started.` },
+    });
+
+    await act(async () => resolveAnalyze(jobAnalysisFixture));
+
+    await waitFor(() => expect(screen.getByRole("button", { name: /analyze & match/i })).not.toBeDisabled());
+    expect(resumeService.matchProfile).not.toHaveBeenCalled();
+    expect(screen.queryByText("Profile match 72%")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /generate resume/i })).toBeDisabled();
+  });
+
+  it("clears analyzed package state after editing analyzed job details", async () => {
+    const user = userEvent.setup();
+    renderWorkspace();
+    await fillJobAndAnalyze(user);
+
+    expect(screen.getByText("Profile match 72%")).toBeInTheDocument();
+    await user.type(screen.getByLabelText(/company name/i), " Updated");
+
+    expect(screen.queryByText("Profile match 72%")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /generate resume/i })).toBeDisabled();
   });
 
   it("shows an analysis error, keeps the JD, and does not generate", async () => {
@@ -149,14 +199,14 @@ describe("GenerateResumeWorkspace", () => {
     await user.clear(screen.getByLabelText(/target job title/i));
     await user.type(screen.getByLabelText(/target job title/i), "Software Engineer IV");
     await user.type(screen.getByPlaceholderText(/paste the full job description/i), jdText);
-    await user.click(screen.getByRole("button", { name: /analyze job/i }));
+    await user.click(screen.getByRole("button", { name: /analyze & match/i }));
 
     expect(await screen.findByText(/analysis service unavailable/i)).toBeInTheDocument();
     expect(screen.getByPlaceholderText(/paste the full job description/i)).toHaveValue(jdText);
     expect(resumeService.generateResume).not.toHaveBeenCalled();
   });
 
-  it("generates through the persisted profileId path without sending the full candidate profile", async () => {
+  it("generates with a canonical profile snapshot from the persisted profile", async () => {
     const user = userEvent.setup();
     renderWorkspace();
     await fillJobAndAnalyze(user);
@@ -164,16 +214,60 @@ describe("GenerateResumeWorkspace", () => {
     await user.click(screen.getByRole("button", { name: /generate resume/i }));
 
     await screen.findByText(/venu madhav pendurthi/i);
+    expect(screen.getByText("Resume ATS 72%")).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Resume ATS Score" })).toBeInTheDocument();
+    expect(screen.getByText("Generated resume ATS score")).toBeInTheDocument();
+    expect(screen.getByText(/^Saved$/)).toBeInTheDocument();
     expect(resumeService.generateResume).toHaveBeenCalledTimes(1);
     expect(resumeService.generateResume).toHaveBeenCalledWith(token, expect.objectContaining({
       profileId: "profile-123",
-      job_description: jdText,
-      target_role: "Software Engineer IV",
-      target_company: "Morgan Stanley",
-      templateId: "classic-ats",
+      profileVersion: 3,
+      resumeIntelligencePackageId: "package-123",
+      candidate: expect.objectContaining({
+        firstName: "Venu Madhav",
+        lastName: "Pendurthi",
+        currentTitle: "Senior .NET Developer",
+        email: "venu@example.com",
+        phone: "+12014436937",
+      }),
+      skills: expect.arrayContaining([
+        expect.objectContaining({
+          categoryId: "programming-languages",
+          categoryName: "Programming Languages",
+          items: ["C#", "SQL"],
+        }),
+      ]),
+      workExperience: expect.arrayContaining([
+        expect.objectContaining({
+          experienceId: "exp-infosys",
+          companyName: "Infosys",
+          roleTitle: "Senior .NET Developer",
+          isCurrentRole: true,
+          endDate: null,
+        }),
+      ]),
+      job: {
+        description: jdText,
+        targetRole: "Software Engineer IV",
+        targetCompany: "Morgan Stanley",
+        level: "Senior",
+      },
+      resumePreferences: expect.objectContaining({
+        templateId: "classic-ats",
+        headerVisibility: expect.objectContaining({
+          linkedinUrl: false,
+          githubUrl: false,
+          portfolioUrl: false,
+        }),
+      }),
       generationSettings: expect.any(Object),
     }));
-    expect(vi.mocked(resumeService.generateResume).mock.calls[0][1]).not.toHaveProperty("candidate_profile");
+    const body = vi.mocked(resumeService.generateResume).mock.calls[0][1];
+    expect(body).not.toHaveProperty("candidate_profile");
+    expect(body).not.toHaveProperty("job_description");
+    expect(JSON.stringify(body.workExperience)).not.toContain("rawNotes");
+    expect(JSON.stringify(body.workExperience)).not.toContain("bullets");
+    expect(resumeService.getResume).toHaveBeenCalledWith(token, generatedResumeResponseFixture.resumeId);
   });
 
   it("prevents rapid double-click duplicate generation", async () => {
@@ -250,6 +344,49 @@ describe("GenerateResumeWorkspace", () => {
     const payload = vi.mocked(resumeService.updateResume).mock.calls[0][2];
     expect(JSON.stringify(payload.resumeJson.sections)).toContain("Updated for test");
 
+  });
+
+  it("preserves structured bullet provenance when editing currentText", async () => {
+    const structured = structuredClone(structuredResumeFixture);
+    const experienceSection = structured.sections.find((section) => section.type === "experience");
+    const experienceEntries = experienceSection?.content as Array<{ bullets: unknown[] }>;
+    experienceEntries[0].bullets = [
+      {
+        bulletId: "bullet-structured-1",
+        order: 1,
+        generatedText: "Structured generated bullet should remain immutable.",
+        currentText: "Structured current bullet for rendering.",
+        userEdited: false,
+        supportedRequirementIds: ["req-c"],
+        supportingEvidenceIds: ["ev-infosys-api"],
+        validationStatus: "validated",
+        warnings: [],
+      },
+    ];
+    const structuredRecord = { ...resumeRecordFixture, resumeJson: structured };
+    vi.mocked(resumeService.listResumes).mockResolvedValueOnce([structuredRecord]);
+    vi.mocked(resumeService.getResume).mockResolvedValueOnce(structuredRecord);
+
+    renderWorkspace({ route: "/generate/resume-123", path: "/generate/:resumeId" });
+    await screen.findByText(/Structured current bullet for rendering/i);
+    expect(screen.queryByText(/Structured generated bullet should remain immutable/i)).not.toBeInTheDocument();
+
+    const article = screen.getByRole("article", { name: /editable generated resume document/i });
+    const editableText = within(article).getByText(/Structured current bullet for rendering/i);
+    editableText.textContent = "Edited currentText while keeping provenance.";
+    fireEvent.input(editableText);
+
+    await waitFor(() => expect(resumeService.updateResume).toHaveBeenCalledTimes(1), { timeout: 2500 });
+    const payload = vi.mocked(resumeService.updateResume).mock.calls[0][2];
+    const savedExperience = payload.resumeJson.sections.find((section) => section.type === "experience")?.content as Array<{ bullets: Array<Record<string, unknown>> }>;
+    const savedBullet = savedExperience[0].bullets[0];
+    expect(savedBullet.currentText).toBe("Edited currentText while keeping provenance.");
+    expect(savedBullet.generatedText).toBe("Structured generated bullet should remain immutable.");
+    expect(savedBullet.bulletId).toBe("bullet-structured-1");
+    expect(savedBullet.supportingEvidenceIds).toEqual(["ev-infosys-api"]);
+    expect(savedBullet.supportedRequirementIds).toEqual(["req-c"]);
+    expect(savedBullet.userEdited).toBe(true);
+    expect(savedBullet.validationStatus).toBe("pending_validation");
   });
 
   it("keeps edited content visible and shows an error when autosave fails", async () => {
@@ -466,7 +603,7 @@ describe("GenerateResumeWorkspace", () => {
     renderWorkspace({ profile: lowCompletenessProfileFixture });
 
     expect(await screen.findByText(/profile is 42% complete/i)).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /analyze job/i })).toBeDisabled();
+    expect(screen.getByRole("button", { name: /analyze & match/i })).toBeDisabled();
     expect(screen.getByLabelText(/target job title/i)).toBeEnabled();
   });
 

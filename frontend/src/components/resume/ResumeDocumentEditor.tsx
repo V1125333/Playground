@@ -2,14 +2,17 @@ import { ChevronDown, ChevronUp, EyeOff, GripVertical, Info, Plus, Trash2 } from
 import { useMemo, useState } from "react";
 import { Button, Badge } from "../ui";
 import { cn } from "../../lib/utils";
-import { contactItems, formatPeriod } from "../../resume/format";
+import { contactItems, formatPeriod, headerContactItems } from "../../resume/format";
 import type {
   GeneratedResume,
+  GeneratedResumeBullet,
   GeneratedResumeSection,
   ProfileEvidenceItem,
   RequirementMatch,
   StructuredGeneratedResume,
 } from "../../resume/types";
+
+type BulletValue = string | Partial<GeneratedResumeBullet>;
 
 type ExperienceEntry = {
   company: string;
@@ -17,7 +20,7 @@ type ExperienceEntry = {
   location?: string;
   startDate?: string;
   endDate?: string;
-  bullets: string[];
+  bullets: BulletValue[];
   sourceRecordId?: string;
 };
 
@@ -25,7 +28,7 @@ type ProjectEntry = {
   name: string;
   org?: string;
   link?: string;
-  bullets: string[];
+  bullets: BulletValue[];
   technologies?: string[];
   sourceRecordId?: string;
 };
@@ -105,9 +108,9 @@ export function ResumeDocumentEditor({
 }
 
 function ResumeHeader({ resume, profile }: { resume: StructuredGeneratedResume; profile: GeneratedResume | null }) {
-  const name = profile?.name || resume.resumeName.replace(` - ${resume.targetJobTitle}`, "");
-  const title = profile?.title || "";
-  const contacts = contactItems(resume.contact);
+  const name = resume.resumeHeader ? resume.resumeHeader.fullName ?? "" : profile?.name ?? resume.resumeName.replace(` - ${resume.targetJobTitle}`, "");
+  const title = resume.resumeHeader ? resume.resumeHeader.currentTitle ?? "" : profile?.title ?? "";
+  const contacts = resume.resumeHeader ? headerContactItems(resume.resumeHeader) : contactItems(resume.contact);
   return (
     <header className="resume-header">
       <h1>{name}</h1>
@@ -298,12 +301,12 @@ function BulletList({
   editable,
   onChange,
 }: {
-  bullets: string[];
+  bullets: BulletValue[];
   editable: boolean;
-  onChange: (bullets: string[]) => void;
+  onChange: (bullets: BulletValue[]) => void;
 }) {
-  const updateBullet = (index: number, value: string) => onChange(bullets.map((bullet, itemIndex) => (itemIndex === index ? value : bullet)));
-  const addBullet = () => onChange([...bullets, "Describe a truthful, evidence-supported accomplishment."]);
+  const updateBullet = (index: number, value: string) => onChange(bullets.map((bullet, itemIndex) => (itemIndex === index ? updateBulletText(bullet, value) : bullet)));
+  const addBullet = () => onChange([...bullets, createManualBullet(bullets.length + 1)]);
   const deleteBullet = (index: number) => {
     if (!window.confirm("Delete this bullet from the current draft?")) return;
     onChange(bullets.filter((_, itemIndex) => itemIndex !== index));
@@ -321,7 +324,7 @@ function BulletList({
       <ul className="resume-bullets">
         {bullets.map((bullet, index) => (
           <li className="resume-bullet-editable" key={`bullet-${index}`}>
-            <EditableText value={bullet} editable={editable} onChange={(value) => updateBullet(index, value)} />
+            <EditableText value={bulletText(bullet)} editable={editable} onChange={(value) => updateBullet(index, value)} />
             {editable && (
               <span className="resume-bullet-toolbar">
                 <button type="button" aria-label="Move bullet up" disabled={index === 0} onClick={() => moveBullet(index, -1)}>
@@ -345,6 +348,38 @@ function BulletList({
       )}
     </div>
   );
+}
+
+function bulletText(bullet: BulletValue): string {
+  if (typeof bullet === "string") return bullet;
+  return String(bullet.currentText || bullet.generatedText || "");
+}
+
+function updateBulletText(bullet: BulletValue, value: string): BulletValue {
+  if (typeof bullet === "string") return value;
+  const generatedText = String(bullet.generatedText || "");
+  return {
+    ...bullet,
+    currentText: value,
+    userEdited: generatedText ? value !== generatedText : true,
+    validationStatus: "pending_validation",
+    warnings: Array.from(new Set([...(bullet.warnings ?? []), "User edited this bullet; validation review is recommended."])),
+  };
+}
+
+function createManualBullet(order: number): GeneratedResumeBullet {
+  const currentText = "Describe a truthful, evidence-supported accomplishment.";
+  return {
+    bulletId: `manual-bullet-${Date.now()}-${order}`,
+    order,
+    generatedText: "",
+    currentText,
+    userEdited: true,
+    supportedRequirementIds: [],
+    supportingEvidenceIds: [],
+    validationStatus: "pending_validation",
+    warnings: ["Manual bullet has no provenance; validation required before treating it as evidence-backed."],
+  };
 }
 
 function EvidenceButton({

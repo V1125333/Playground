@@ -6,11 +6,12 @@ from app.schemas.resume import (
     JobAnalysisResponse,
     JobKeywordAnalysisItem,
     ResumeContact,
+    ResumeCertification,
     ResumeEducation,
     ResumeExperience,
+    ResumeProject,
     SkillCategory,
 )
-from app.services.profile_matching import match_job_to_profile
 from app.services.profile_service import compute_profile_content_hash, ensure_profile_record_ids
 from app.services.resume_generation_pipeline import (
     RESUME_GENERATION_ALGORITHM_VERSION,
@@ -81,18 +82,55 @@ def candidate() -> CandidateProfile:
                 ),
             ],
             education=[ResumeEducation(degree="Bachelor of Technology in Computer Science", institution="JNTU")],
+            projects=[ResumeProject(name="Provider Portal", bullets=["Built C# portal workflows."], technologies=["C#"])],
+            certifications=[ResumeCertification(name="Scrum Fundamentals", issuer="Scrum Alliance")],
         )
     )
 
 
-def build_result(job_analysis):
+def resume_preferences(header_visibility: dict | None = None, section_visibility: dict | None = None) -> dict:
+    return {
+        "templateId": "classic-ats",
+        "headerVisibility": {
+            "fullName": True,
+            "currentTitle": True,
+            "email": True,
+            "phone": True,
+            "location": True,
+            "linkedinUrl": False,
+            "githubUrl": False,
+            "portfolioUrl": False,
+            **(header_visibility or {}),
+        },
+        "sectionVisibility": {
+            "summary": True,
+            "skills": True,
+            "experience": True,
+            "projects": True,
+            "education": True,
+            "certifications": True,
+            **(section_visibility or {}),
+        },
+    }
+
+
+def build_result(job_analysis, *, header_visibility: dict | None = None, section_visibility: dict | None = None):
     profile = candidate()
+    profile.contact = ResumeContact(
+        email="venu@example.com",
+        phone="+12014436937",
+        location="Hartford, CT",
+        linkedin="https://linkedin.com/in/venu",
+        github="https://github.com/venu",
+        portfolio="https://venu.dev",
+    )
     payload = GenerateResumeRequest(
         profileId="11111111-1111-1111-1111-111111111111",
         job_description="Need C#, .NET, Azure, Trading, Financial Services, Technical Leadership.",
         target_role="Software Engineer IV",
         target_company="Target",
         jobAnalysis=job_analysis,
+        resumePreferences=resume_preferences(header_visibility, section_visibility),
     )
     context = build_generation_context(profile_record(profile), payload, job_analysis)
     selected = select_relevant_profile_evidence(context)
@@ -121,6 +159,51 @@ def test_adjacent_skill_is_not_renamed_to_required_skill() -> None:
     assert "Azure" not in skills
     assert "AWS" in skills or not skills
     assert "Azure" in structured.missing_requirements
+
+
+def test_generated_skills_are_grouped_for_resume_display() -> None:
+    _, _, _, structured, _, resume = build_result(analysis(keyword("C#"), keyword(".NET"), keyword("SQL Server")))
+    skills_section = next(section for section in structured.sections if section.type == "skills")
+    categories = [group["category"] for group in skills_section.content]
+
+    assert "Technical Skills" not in categories
+    assert "Programming Languages" in categories
+    assert "Backend Frameworks & Tools" in categories
+    assert "Databases" in categories
+    assert any(group.category == "Programming Languages" and "C#" in group.items for group in resume.skills)
+    assert any(group.category == "Backend Frameworks & Tools" and ".NET" in group.items for group in resume.skills)
+
+
+def test_compound_azure_skill_is_split_into_resume_friendly_items() -> None:
+    profile = candidate()
+    profile.skills = [
+        SkillCategory(
+            category="Cloud Platforms & Services",
+            categoryId="cloud-platforms-services",
+            categoryName="Cloud Platforms & Services",
+            order=0,
+            items=["Microsoft Azure (App Service, Azure SQL)"],
+        )
+    ]
+    payload = GenerateResumeRequest(
+        profileId="11111111-1111-1111-1111-111111111111",
+        job_description="Need Azure cloud development.",
+        target_role="Software Engineer IV",
+        target_company="Target",
+        jobAnalysis=analysis(keyword("Azure", category="Cloud")),
+        resumePreferences=resume_preferences(),
+    )
+    context = build_generation_context(profile_record(profile), payload, payload.job_analysis)
+    selected = select_relevant_profile_evidence(context)
+    structured = assemble_structured_resume(profile, payload, context, selected)
+    skills_section = next(section for section in structured.sections if section.type == "skills")
+
+    assert skills_section.content == [
+        {
+            "category": "Cloud & Infrastructure",
+            "items": ["Microsoft Azure", "Azure App Service", "Azure SQL Database"],
+        }
+    ]
 
 
 def test_summary_includes_only_supported_domains() -> None:
@@ -169,3 +252,98 @@ def test_generation_algorithm_version_is_set() -> None:
     _, _, _, structured, _, _ = build_result(analysis(keyword("C#")))
 
     assert structured.generation_algorithm_version == RESUME_GENERATION_ALGORITHM_VERSION
+
+
+def test_header_visibility_flags_build_structured_header_and_filter_contact() -> None:
+    _, _, _, hidden, _, hidden_resume = build_result(
+        analysis(keyword("C#")),
+        header_visibility={
+            "fullName": True,
+            "currentTitle": False,
+            "email": False,
+            "phone": True,
+            "location": False,
+            "linkedinUrl": False,
+            "githubUrl": False,
+            "portfolioUrl": False,
+        },
+    )
+
+    assert hidden.resume_header == {"fullName": "Venu Madhav Pendurthi", "phone": "+12014436937"}
+    assert hidden.contact.email == ""
+    assert hidden.contact.phone == "+12014436937"
+    assert hidden.contact.location == ""
+    assert hidden.contact.linkedin == ""
+    assert hidden.contact.github == ""
+    assert hidden.contact.portfolio == ""
+    assert hidden_resume.name == "Venu Madhav Pendurthi"
+    assert hidden_resume.title == ""
+    assert hidden_resume.contact.linkedin == ""
+    assert hidden_resume.contact.github == ""
+    assert hidden_resume.contact.portfolio == ""
+
+    _, _, _, visible, _, visible_resume = build_result(
+        analysis(keyword("C#")),
+        header_visibility={
+            "fullName": False,
+            "currentTitle": True,
+            "email": True,
+            "phone": False,
+            "location": True,
+            "linkedinUrl": True,
+            "githubUrl": True,
+            "portfolioUrl": True,
+        },
+    )
+
+    assert "fullName" not in visible.resume_header
+    assert visible.resume_header == {
+        "currentTitle": "Senior .NET Developer",
+        "email": "venu@example.com",
+        "location": "Hartford, CT",
+        "linkedinUrl": "https://linkedin.com/in/venu",
+        "githubUrl": "https://github.com/venu",
+        "portfolioUrl": "https://venu.dev",
+    }
+    assert visible.contact.phone == ""
+    assert visible.contact.linkedin == "https://linkedin.com/in/venu"
+    assert visible.contact.github == "https://github.com/venu"
+    assert visible.contact.portfolio == "https://venu.dev"
+    assert visible_resume.name == ""
+    assert visible_resume.title == "Senior .NET Developer"
+
+
+def test_section_visibility_excludes_sections_before_structured_resume_rendering() -> None:
+    _, _, _, structured, _, resume = build_result(
+        analysis(keyword("C#")),
+        section_visibility={
+            "summary": False,
+            "skills": False,
+            "experience": True,
+            "projects": False,
+            "education": False,
+            "certifications": False,
+        },
+    )
+
+    section_types = [section.type for section in structured.sections]
+    assert section_types == ["experience"]
+    assert resume.summary == ""
+    assert resume.skills == []
+    assert resume.projects == []
+    assert resume.education == []
+    assert resume.certifications == []
+
+
+def test_unmapped_project_still_renders_in_projects_section() -> None:
+    _, _, _, structured, _, resume = build_result(
+        analysis(keyword("C#")),
+        section_visibility={"projects": True},
+    )
+
+    projects_section = next(section for section in structured.sections if section.type == "projects")
+
+    assert projects_section.content[0]["name"] == "Provider Portal"
+    assert projects_section.content[0]["sourceRecordId"].startswith("project-project-")
+    assert resume.projects[0].name == "Provider Portal"
+    assert resume.projects[0].linked_experience_ids == []

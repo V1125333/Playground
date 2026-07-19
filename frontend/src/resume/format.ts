@@ -13,7 +13,26 @@ export function contactItems(contact: GeneratedResume["contact"]) {
     contact.email,
     contact.location,
     contact.linkedin,
+    contact.github,
     contact.portfolio,
+  ].filter((item): item is string => Boolean(item?.trim()));
+}
+
+export function headerContactItems(header: {
+  email?: string;
+  phone?: string;
+  location?: string;
+  linkedinUrl?: string;
+  githubUrl?: string;
+  portfolioUrl?: string;
+}) {
+  return [
+    header.phone,
+    header.email,
+    header.location,
+    header.linkedinUrl,
+    header.githubUrl,
+    header.portfolioUrl,
   ].filter((item): item is string => Boolean(item?.trim()));
 }
 

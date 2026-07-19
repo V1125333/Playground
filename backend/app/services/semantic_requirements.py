@@ -433,7 +433,20 @@ def profile_to_semantic_text(profile: CandidateProfile | None) -> str:
         profile.summary,
         " ".join(skill for group in profile.skills for skill in group.items),
         " ".join(
-            " ".join([exp.company, exp.role, exp.location, exp.raw_notes, *exp.bullets, *exp.metric_flags])
+            " ".join([
+                exp.company,
+                exp.client_name or "",
+                exp.role,
+                exp.location,
+                exp.raw_notes,
+                exp.legacy_notes,
+                *exp.responsibilities,
+                *exp.achievements,
+                *exp.technologies,
+                *[f"{metric.label} {metric.value}" for metric in exp.metrics],
+                *exp.bullets,
+                *exp.metric_flags,
+            ])
             for exp in profile.experience
         ),
         " ".join(" ".join([project.name, project.org, *project.technologies, *project.bullets]) for project in profile.projects),

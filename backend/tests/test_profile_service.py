@@ -1,8 +1,11 @@
+import pytest
+
 from app.schemas.resume import (
     CandidateProfile,
     ResumeContact,
     ResumeEducation,
     ResumeExperience,
+    ResumeProject,
     SkillCategory,
 )
 from app.services.profile_matching import build_profile_evidence_index, profile_match_cache_key
@@ -51,6 +54,18 @@ def test_profile_update_changes_content_hash() -> None:
     changed = profile.model_copy(update={"title": "Lead .NET Developer"})
 
     assert compute_profile_content_hash(profile) != compute_profile_content_hash(changed)
+
+
+def test_profile_preserves_explicit_first_and_last_name() -> None:
+    profile = CandidateProfile(
+        name="Venu Madhav Pendurthi",
+        firstName="Venu Madhav",
+        lastName="Pendurthi",
+    )
+    data = profile.model_dump(mode="json", by_alias=True)
+
+    assert data["firstName"] == "Venu Madhav"
+    assert data["lastName"] == "Pendurthi"
 
 
 def test_completeness_calculation_is_deterministic() -> None:
@@ -119,3 +134,46 @@ def test_match_cache_key_changes_with_profile_version_and_hash() -> None:
     second = profile_match_cache_key(job_analysis, profile, "profile-1", "2026-07-09", 2, "hash-b")
 
     assert first != second
+
+
+def test_project_links_are_backward_compatible_and_default_empty() -> None:
+    profile = CandidateProfile.model_validate({
+        "name": "Venu",
+        "projects": [{"projectId": "project-1", "name": "Portfolio", "bullets": ["Built API."], "technologies": ["Python"]}],
+    })
+
+    assert profile.projects[0].linked_experience_ids == []
+
+
+def test_invalid_project_experience_id_is_rejected() -> None:
+    with pytest.raises(ValueError, match="PROJECT_LINK_TARGET_NOT_FOUND"):
+        CandidateProfile(
+            name="Venu",
+            experience=[ResumeExperience(experienceId="exp-1", company="Infosys", role="Developer")],
+            projects=[ResumeProject(projectId="project-1", name="Portfolio", linkedExperienceIds=["missing-exp"])],
+        )
+
+
+def test_duplicate_project_links_are_rejected() -> None:
+    with pytest.raises(ValueError, match="duplicate"):
+        ResumeProject(projectId="project-1", name="Portfolio", linkedExperienceIds=["exp-1", "exp-1"])
+
+
+def test_blank_project_links_are_rejected() -> None:
+    with pytest.raises(ValueError, match="blank"):
+        ResumeProject(projectId="project-1", name="Portfolio", linkedExperienceIds=[""])
+
+
+def test_project_mapping_change_changes_profile_hash() -> None:
+    base = CandidateProfile(
+        name="Venu",
+        experience=[ResumeExperience(experienceId="exp-1", company="Infosys", role="Developer")],
+        projects=[ResumeProject(projectId="project-1", name="Portfolio", bullets=["Built API."], linkedExperienceIds=[])],
+    )
+    linked = CandidateProfile(
+        name="Venu",
+        experience=[ResumeExperience(experienceId="exp-1", company="Infosys", role="Developer")],
+        projects=[ResumeProject(projectId="project-1", name="Portfolio", bullets=["Built API."], linkedExperienceIds=["exp-1"])],
+    )
+
+    assert compute_profile_content_hash(base) != compute_profile_content_hash(linked)
