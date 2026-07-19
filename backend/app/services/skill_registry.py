@@ -21,6 +21,7 @@ SKILL_REGISTRY_CATEGORIES: tuple[str, ...] = (
     "AI & Machine Learning",
     "Tools",
 )
+SKILL_REGISTRY_VERSION = "skill-registry-v1"
 
 SkillNormalizationMatchType = Literal["exact", "alias", "normalized", "unknown"]
 SkillMatchType = Literal["exact", "alias", "broader", "narrower", "related", "no_match"]
@@ -417,6 +418,7 @@ def _cycle_errors(label: str, graph: dict[str, list[str]]) -> list[str]:
 
 
 __all__ = [
+    "SKILL_REGISTRY_VERSION",
     "SKILL_REGISTRY_CATEGORIES",
     "SkillDefinition",
     "SkillNormalizationResult",

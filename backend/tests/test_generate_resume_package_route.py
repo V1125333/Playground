@@ -30,6 +30,9 @@ from app.services.summary_planner import SummaryBuildResult, SummaryGenerationRe
 from app.services.experience_planner import EXPERIENCE_PLANNER_VERSION
 from app.services.experience_prompt_builder import EXPERIENCE_PROMPT_VERSION
 from app.services.experience_generation_service import experience_model_configuration_hash
+from app.services.skill_evidence_index import SKILL_EVIDENCE_INDEX_VERSION
+from app.services.skill_registry import SKILL_REGISTRY_VERSION
+from app.services.skills_planner import SKILLS_PLANNER_VERSION
 
 
 USER_ID = UUID("11111111-1111-1111-1111-111111111111")
@@ -332,6 +335,64 @@ def experience_intelligence_json() -> dict:
     }
 
 
+def skills_intelligence_json() -> dict:
+    return {
+        "categories": [
+            {
+                "category": "Languages",
+                "order": 1,
+                "skills": [
+                    {
+                        "skillId": "skill-csharp",
+                        "canonicalName": "C#",
+                        "normalizedValue": "c sharp",
+                        "displayName": "C#",
+                        "category": "Languages",
+                        "tier": "primary",
+                        "decision": "included",
+                        "matchType": "exact",
+                        "matchStrength": "exact",
+                        "score": 100,
+                        "scoreBreakdown": {
+                            "jdPriority": 40,
+                            "evidenceStrength": 25,
+                            "recency": 15,
+                            "frequency": 6,
+                            "roleRelevance": 10,
+                            "exactMatchBonus": 10,
+                            "partialMatchPenalty": 0,
+                            "profileOnlyPenalty": 0,
+                            "genericSkillPenalty": 0,
+                            "finalScore": 100,
+                        },
+                        "supportingEvidenceIds": ["evidence-csharp"],
+                        "supportedRequirementIds": ["req-csharp"],
+                        "evidenceStrength": "strong",
+                        "recency": "current",
+                        "profileOnly": False,
+                        "inclusionReason": "C# is supported by candidate evidence.",
+                        "exclusionReason": None,
+                        "warnings": [],
+                        "order": 1,
+                    }
+                ],
+            }
+        ],
+        "includedSkills": [],
+        "excludedSkills": [],
+        "plannerVersion": SKILLS_PLANNER_VERSION,
+        "skillRegistryVersion": SKILL_REGISTRY_VERSION,
+        "skillEvidenceIndexVersion": SKILL_EVIDENCE_INDEX_VERSION,
+        "roleFamily": ".NET Application Development",
+        "targetRole": "Software Engineer IV",
+        "targetCompany": "Velera",
+        "level": "Senior",
+        "validationStatus": "valid",
+        "warnings": [],
+        "createdAt": "2026-07-19T00:00:00+00:00",
+    }
+
+
 async def fake_session():
     yield object()
 
@@ -380,6 +441,7 @@ def test_generate_route_reuses_valid_resume_intelligence_package(monkeypatch) ->
             profile_match_json=stored_match_json,
             summary_intelligence_json=summary_intelligence_json(record),
             experience_intelligence_json=experience_intelligence_json(),
+            skills_intelligence_json=skills_intelligence_json(),
         )
 
     async def fake_create_generated_resume(_session, user_id, structured, job_analysis_json, profile_match_json):
@@ -398,6 +460,7 @@ def test_generate_route_reuses_valid_resume_intelligence_package(monkeypatch) ->
     monkeypatch.setattr(resumes_route, "generate_experience_intelligence", Mock(side_effect=AssertionError("Experience model must not be called during valid package generation.")))
     monkeypatch.setattr(resumes_route, "build_experience_intelligence", Mock(side_effect=AssertionError("Experience Planner must not be rebuilt during valid package generation.")))
     monkeypatch.setattr(resumes_route, "build_experience_prompts", Mock(side_effect=AssertionError("Experience Prompt Builder must not run during valid package generation.")))
+    monkeypatch.setattr(resumes_route, "build_skills_intelligence", Mock(side_effect=AssertionError("Skills Planner must not run during valid package generation.")))
     monkeypatch.setattr(resumes_route.profile_service, "get_profile", fake_get_profile)
     monkeypatch.setattr(resumes_route, "validate_resume_intelligence_package", fake_validate_package)
     monkeypatch.setattr(resumes_route, "create_generated_resume", fake_create_generated_resume)
@@ -459,7 +522,7 @@ def test_match_profile_route_creates_package_with_summary_intelligence(monkeypat
             }
         )
 
-    async def fake_create_package(_session, user_id, *, profile_record, payload, job_analysis, profile_match, summary_intelligence, experience_intelligence=None):
+    async def fake_create_package(_session, user_id, *, profile_record, payload, job_analysis, profile_match, summary_intelligence, experience_intelligence=None, skills_intelligence=None):
         assert user_id == USER_ID
         assert profile_record is record
         assert payload.job_description == JOB_DESCRIPTION
@@ -474,8 +537,13 @@ def test_match_profile_route_creates_package_with_summary_intelligence(monkeypat
         assert experience_intelligence.experience_prompt_inputs[0].prompt_version == "experience-prompt-v1"
         assert experience_intelligence.role_intelligence
         assert experience_intelligence.role_intelligence[0].bullets
+        assert skills_intelligence is not None
+        assert skills_intelligence.planner_version == SKILLS_PLANNER_VERSION
+        assert skills_intelligence.included_skills
+        assert skills_intelligence.excluded_skills is not None
         captured["summary_intelligence"] = summary_intelligence
         captured["experience_intelligence"] = experience_intelligence
+        captured["skills_intelligence"] = skills_intelligence
         return ResumeIntelligencePackageSchema(
             packageId=PACKAGE_ID,
             profileId=PROFILE_ID,
@@ -489,6 +557,7 @@ def test_match_profile_route_creates_package_with_summary_intelligence(monkeypat
             profileMatch=profile_match.match_summary.model_dump(mode="json", by_alias=True),
             summaryIntelligence=summary_intelligence,
             experienceIntelligence=experience_intelligence,
+            skillsIntelligence=skills_intelligence.model_dump(mode="json", by_alias=True),
             validationStatus="valid",
             validationWarnings=[],
             createdAt="2026-07-18T00:00:00+00:00",
@@ -512,6 +581,8 @@ def test_match_profile_route_creates_package_with_summary_intelligence(monkeypat
     assert body["experienceIntelligence"]["plannerVersion"] == captured["experience_intelligence"].planner_version
     assert body["experienceIntelligence"]["roles"][0]["experienceId"] == "exp-current"
     assert body["experienceIntelligence"]["experiencePromptInputs"][0]["promptVersion"] == "experience-prompt-v1"
+    assert body["skillsIntelligence"]["plannerVersion"] == SKILLS_PLANNER_VERSION
+    assert body["skillsIntelligence"]["includedSkills"]
     assert captured["summary_intelligence"].model == "gpt-5.5"
     assert captured["summary_planner"].target_emphasis.top_supported_technologies
 

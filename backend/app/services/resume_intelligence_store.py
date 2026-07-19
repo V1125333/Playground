@@ -21,6 +21,7 @@ from app.core.config import settings
 from app.services.experience_planner import EXPERIENCE_PLANNER_VERSION
 from app.services.experience_prompt_builder import EXPERIENCE_PROMPT_VERSION
 from app.services.experience_generation_service import experience_model_configuration_hash
+from app.services.skills_planner import SkillsIntelligence, skills_intelligence_stale_reasons
 
 
 STALE_PACKAGE_MESSAGE = "Your profile or job description changed after analysis. Run Analyze & Match again."
@@ -55,6 +56,7 @@ async def create_resume_intelligence_package(
     profile_match: ProfileMatchResponse,
     summary_intelligence: SummaryIntelligence,
     experience_intelligence: ExperienceIntelligencePlan | None = None,
+    skills_intelligence: SkillsIntelligence | None = None,
 ) -> ResumeIntelligencePackageSchema:
     from app.models.resume_intelligence import ResumeIntelligencePackageModel
 
@@ -74,8 +76,9 @@ async def create_resume_intelligence_package(
         profile_match_json=profile_match.match_summary.model_dump(mode="json", by_alias=True),
         summary_intelligence_json=summary_intelligence.model_dump(mode="json", by_alias=True),
         experience_intelligence_json=experience_intelligence.model_dump(mode="json", by_alias=True) if experience_intelligence else None,
-        validation_status=package_validation_status(job_analysis.analysis_warnings, experience_intelligence),
-        validation_warnings=package_validation_warnings(job_analysis.analysis_warnings, experience_intelligence),
+        skills_intelligence_json=skills_intelligence.model_dump(mode="json", by_alias=True) if skills_intelligence else None,
+        validation_status=package_validation_status(job_analysis.analysis_warnings, experience_intelligence, skills_intelligence),
+        validation_warnings=package_validation_warnings(job_analysis.analysis_warnings, experience_intelligence, skills_intelligence),
     )
     session.add(record)
     await session.commit()
@@ -172,6 +175,8 @@ def package_stale_reasons(record, profile_record, payload: GenerateResumeRequest
         reasons.append("experience intelligence missing")
     else:
         reasons.extend(experience_intelligence_stale_reasons(experience_intelligence))
+    skills_intelligence = getattr(record, "skills_intelligence_json", None)
+    reasons.extend(skills_intelligence_stale_reasons(skills_intelligence))
     return reasons
 
 
@@ -220,22 +225,40 @@ def experience_intelligence_stale_reasons(experience_intelligence: dict) -> list
     return reasons
 
 
-def package_validation_status(analysis_warnings: list[str], experience_intelligence: ExperienceIntelligencePlan | None) -> str:
+def package_validation_status(
+    analysis_warnings: list[str],
+    experience_intelligence: ExperienceIntelligencePlan | None,
+    skills_intelligence: SkillsIntelligence | None = None,
+) -> str:
     if experience_intelligence is None:
         return "invalid"
     if experience_intelligence.validation_status == "invalid" or experience_intelligence.overall_validation_status == "invalid":
         return "invalid"
+    if skills_intelligence is None:
+        return "invalid"
+    if skills_intelligence.validation_status == "invalid":
+        return "invalid"
     if analysis_warnings or experience_intelligence.warnings or experience_intelligence.validation_status in {"warning", "valid_with_warnings"}:
+        return "valid_with_warnings"
+    if skills_intelligence.warnings or skills_intelligence.validation_status == "valid_with_warnings":
         return "valid_with_warnings"
     return "valid"
 
 
-def package_validation_warnings(analysis_warnings: list[str], experience_intelligence: ExperienceIntelligencePlan | None) -> list[str]:
+def package_validation_warnings(
+    analysis_warnings: list[str],
+    experience_intelligence: ExperienceIntelligencePlan | None,
+    skills_intelligence: SkillsIntelligence | None = None,
+) -> list[str]:
     warnings = list(analysis_warnings)
     if experience_intelligence is None:
         warnings.append("experience intelligence missing")
     else:
         warnings.extend(experience_intelligence.warnings)
+    if skills_intelligence is None:
+        warnings.append("skills intelligence missing")
+    else:
+        warnings.extend(skills_intelligence.warnings)
     return dedupe(warnings)
 
 
@@ -286,6 +309,7 @@ def package_record_to_schema(record) -> ResumeIntelligencePackageSchema:
         profileMatch=record.profile_match_json,
         summaryIntelligence=record.summary_intelligence_json,
         experienceIntelligence=getattr(record, "experience_intelligence_json", None),
+        skillsIntelligence=getattr(record, "skills_intelligence_json", None),
         validationStatus=record.validation_status,
         validationWarnings=record.validation_warnings or [],
         createdAt=to_iso(record.created_at),

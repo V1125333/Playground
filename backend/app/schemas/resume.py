@@ -1192,6 +1192,7 @@ class ProfileMatchResponse(BaseModel):
     job_description_hash: str = Field(default="", alias="jobDescriptionHash")
     summary_intelligence: SummaryIntelligence | None = Field(default=None, alias="summaryIntelligence")
     experience_intelligence: ExperienceIntelligencePlan | None = Field(default=None, alias="experienceIntelligence")
+    skills_intelligence: dict | None = Field(default=None, alias="skillsIntelligence")
     validation_status: str = Field(default="", alias="validationStatus")
     validation_warnings: list[str] = Field(default_factory=list, alias="validationWarnings")
 
@@ -1509,6 +1510,7 @@ class ResumeIntelligencePackageSchema(BaseModel):
     profile_match: dict = Field(default_factory=dict, alias="profileMatch")
     summary_intelligence: SummaryIntelligence | None = Field(default=None, alias="summaryIntelligence")
     experience_intelligence: ExperienceIntelligencePlan | None = Field(default=None, alias="experienceIntelligence")
+    skills_intelligence: dict | None = Field(default=None, alias="skillsIntelligence")
     validation_status: str = Field(default="valid", alias="validationStatus")
     validation_warnings: list[str] = Field(default_factory=list, alias="validationWarnings")
     created_at: str = Field(default="", alias="createdAt")

@@ -26,6 +26,7 @@ class ResumeIntelligencePackageModel(Base):
     profile_match_json: Mapped[dict] = mapped_column(JSONB, nullable=False)
     summary_intelligence_json: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     experience_intelligence_json: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    skills_intelligence_json: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     validation_status: Mapped[str] = mapped_column(String(40), nullable=False, default="valid")
     validation_warnings: Mapped[list] = mapped_column(JSONB, nullable=False, default=list)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)

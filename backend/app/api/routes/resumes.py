@@ -33,6 +33,8 @@ from app.services.profile_matching import build_profile_evidence_index, calculat
 from app.services.experience_planner import build_experience_intelligence
 from app.services.experience_prompt_builder import build_experience_prompts
 from app.services.experience_generation_service import generate_experience_intelligence
+from app.services.skill_evidence_index import build_skill_evidence_index
+from app.services.skills_planner import build_skills_intelligence
 from app.services import auth_store, profile_service
 from app.services.profile_service import ProfileNotFoundError, ProfileOwnershipError, user_id_from_email
 from app.services.resume_generation_pipeline import (
@@ -330,6 +332,17 @@ async def match_resume_profile(
                     payload.generation_settings,
                 )
                 experience_intelligence = await generate_experience_intelligence(experience_intelligence)
+                skill_evidence_index = build_skill_evidence_index(record.profile_data)
+                skills_intelligence = build_skills_intelligence(
+                    skill_evidence_index=skill_evidence_index,
+                    typed_requirements=payload.job_analysis.normalized_requirements,
+                    job_analysis=payload.job_analysis,
+                    target_context={
+                        "targetRole": payload.target_role or payload.job_analysis.role_information.title,
+                        "targetCompany": payload.target_company,
+                        "level": payload.level or "Senior",
+                    },
+                )
                 package = await create_resume_intelligence_package(
                     session,
                     user_id,
@@ -339,6 +352,7 @@ async def match_resume_profile(
                     profile_match=match_response,
                     summary_intelligence=summary_intelligence,
                     experience_intelligence=experience_intelligence,
+                    skills_intelligence=skills_intelligence,
                 )
                 return match_response.model_copy(
                     update={
@@ -346,6 +360,7 @@ async def match_resume_profile(
                         "job_description_hash": package.job_description_hash,
                         "summary_intelligence": summary_intelligence,
                         "experience_intelligence": experience_intelligence,
+                        "skills_intelligence": skills_intelligence.model_dump(mode="json", by_alias=True),
                         "validation_status": package.validation_status,
                         "validation_warnings": package.validation_warnings,
                     }

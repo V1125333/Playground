@@ -7,6 +7,9 @@ from app.services.resume_intelligence_store import (
     job_description_hash,
     package_stale_reasons,
 )
+from app.services.skill_evidence_index import SKILL_EVIDENCE_INDEX_VERSION
+from app.services.skill_registry import SKILL_REGISTRY_VERSION
+from app.services.skills_planner import SKILLS_PLANNER_VERSION
 from app.services.experience_planner import EXPERIENCE_PLANNER_VERSION
 from app.services.experience_prompt_builder import EXPERIENCE_PROMPT_VERSION
 from app.services.experience_generation_service import experience_model_configuration_hash
@@ -50,6 +53,30 @@ def valid_experience_intelligence_json() -> dict:
     }
 
 
+def valid_skills_intelligence_json() -> dict:
+    return {
+        "categories": [
+            {
+                "category": "Languages",
+                "order": 1,
+                "skills": [],
+            }
+        ],
+        "includedSkills": [],
+        "excludedSkills": [],
+        "plannerVersion": SKILLS_PLANNER_VERSION,
+        "skillRegistryVersion": SKILL_REGISTRY_VERSION,
+        "skillEvidenceIndexVersion": SKILL_EVIDENCE_INDEX_VERSION,
+        "roleFamily": ".NET Application Development",
+        "targetRole": "Software Engineer",
+        "targetCompany": "Acme",
+        "level": "Senior",
+        "validationStatus": "valid",
+        "warnings": [],
+        "createdAt": "2026-07-19T00:00:00+00:00",
+    }
+
+
 def profile_record(*, profile_id: str = "11111111-1111-1111-1111-111111111111", version: int = 2, content_hash: str = "profile-hash"):
     return SimpleNamespace(profile_id=profile_id, profile_version=version, content_hash=content_hash)
 
@@ -64,6 +91,7 @@ def package_record(**overrides):
         "target_company": "Acme",
         "level": "Senior",
         "experience_intelligence_json": valid_experience_intelligence_json(),
+        "skills_intelligence_json": valid_skills_intelligence_json(),
     }
     values.update(overrides)
     return SimpleNamespace(**values)
@@ -175,6 +203,52 @@ def test_stale_experience_model_configuration_hash_is_detected() -> None:
     )
 
     assert "experience model configuration changed" in reasons
+
+
+def test_stale_skills_planner_version_is_detected() -> None:
+    data = valid_skills_intelligence_json()
+    data["plannerVersion"] = "old-skills-planner"
+    reasons = package_stale_reasons(
+        package_record(skills_intelligence_json=data),
+        profile_record(),
+        payload(),
+    )
+
+    assert "skills planner version changed" in reasons
+
+
+def test_stale_skill_registry_version_is_detected() -> None:
+    data = valid_skills_intelligence_json()
+    data["skillRegistryVersion"] = "old-registry"
+    reasons = package_stale_reasons(
+        package_record(skills_intelligence_json=data),
+        profile_record(),
+        payload(),
+    )
+
+    assert "skill registry version changed" in reasons
+
+
+def test_stale_skill_evidence_index_version_is_detected() -> None:
+    data = valid_skills_intelligence_json()
+    data["skillEvidenceIndexVersion"] = "old-evidence-index"
+    reasons = package_stale_reasons(
+        package_record(skills_intelligence_json=data),
+        profile_record(),
+        payload(),
+    )
+
+    assert "skill evidence index version changed" in reasons
+
+
+def test_missing_skills_intelligence_is_stale() -> None:
+    reasons = package_stale_reasons(
+        package_record(skills_intelligence_json=None),
+        profile_record(),
+        payload(),
+    )
+
+    assert "skills intelligence missing" in reasons
 
 
 def test_missing_experience_role_intelligence_for_valid_prompt_is_stale() -> None:
