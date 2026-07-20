@@ -315,6 +315,32 @@ def test_validator_rejects_exact_failing_summary_shape() -> None:
     assert SummaryValidationCode.generic_repetitive_language in validation.validation_codes
 
 
+def test_validator_allows_professional_title_fragment_from_identity_metadata() -> None:
+    _, _, _, planner = planner_for(
+        analysis(
+            keyword("C#"),
+            keyword(".NET Framework"),
+            keyword("SQL Server", category="Database"),
+        )
+    )
+    planner.excluded_metadata_terms.append(".NET Developer")
+    generated = SummaryGenerationResult(
+        summary=(
+            "Senior Full Stack .NET Developer with 9+ years of experience building enterprise applications using C#, "
+            ".NET Framework, and SQL Server. Focused on maintainable implementation, debugging, and cross-team delivery "
+            "for enterprise software."
+        ),
+        usedEvidenceIds=list(planner.evidence_ids)[:2],
+        usedSignals=["C#", ".NET Framework", "SQL Server"],
+        excludedSignals=[],
+        riskFlags=[],
+    )
+
+    validation = validate_summary_result(generated, planner)
+
+    assert SummaryValidationCode.metadata_leakage not in validation.validation_codes
+
+
 @pytest.mark.asyncio
 async def test_summary_safely_maps_domains_and_canonical_technologies() -> None:
     candidate = profile()

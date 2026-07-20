@@ -6,6 +6,7 @@ import type {
   GenerationMetadata,
   JobAnalysisResponse,
   ProfileMatchResponse,
+  SectionEnhancementResponse,
   StructuredGeneratedResume,
   StructuredResumeRecord,
 } from "../resume/types";
@@ -25,9 +26,27 @@ async function requestJson<T>(path: string, token: string, init?: RequestInit): 
   });
   if (!response.ok) {
     const error = await response.json().catch(() => null);
-    throw new Error(error?.detail ?? "Resume request failed.");
+    throw new Error(formatApiErrorDetail(error?.detail, "Resume request failed."));
   }
   return (await response.json()) as T;
+}
+
+function formatApiErrorDetail(detail: unknown, fallback: string): string {
+  if (typeof detail === "string" && detail.trim()) return detail;
+  if (!detail || typeof detail !== "object") return fallback;
+
+  const payload = detail as { message?: unknown; details?: unknown };
+  const message = typeof payload.message === "string" && payload.message.trim() ? payload.message.trim() : fallback;
+  if (!Array.isArray(payload.details) || payload.details.length === 0) return message;
+
+  const detailMessages = payload.details
+    .map((item) => {
+      if (!item || typeof item !== "object") return "";
+      const value = (item as { message?: unknown }).message;
+      return typeof value === "string" ? value.trim() : "";
+    })
+    .filter(Boolean);
+  return detailMessages.length ? `${message} ${detailMessages.join(" ")}` : message;
 }
 
 export async function generateResume(token: string, payload: GenerateResumeRequestPayload | Record<string, unknown>): Promise<GeneratedResumeResponse> {
@@ -140,8 +159,32 @@ export async function deleteResume(token: string, resumeId: string): Promise<voi
   });
   if (!response.ok) {
     const error = await response.json().catch(() => null);
-    throw new Error(error?.detail ?? "Resume delete failed.");
+    throw new Error(formatApiErrorDetail(error?.detail, "Resume delete failed."));
   }
+}
+
+export async function enhanceResumeSection(
+  token: string,
+  resumeId: string,
+  payload: Record<string, unknown>,
+): Promise<SectionEnhancementResponse> {
+  return requestJson<SectionEnhancementResponse>(`/api/resumes/${resumeId}/enhance-section`, token, {
+    method: "POST",
+    headers: authHeaders(token),
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function applySectionEnhancement(
+  token: string,
+  resumeId: string,
+  payload: Record<string, unknown>,
+): Promise<StructuredResumeRecord> {
+  return requestJson<StructuredResumeRecord>(`/api/resumes/${resumeId}/apply-section-enhancement`, token, {
+    method: "POST",
+    headers: authHeaders(token),
+    body: JSON.stringify(payload),
+  });
 }
 
 export type ResumeExportOptions = {
@@ -179,7 +222,7 @@ async function exportResume(token: string, resumeId: string, format: "pdf" | "do
     const contentType = response.headers.get("content-type") ?? "";
     if (contentType.includes("application/json")) {
       const error = await response.json().catch(() => null);
-      throw new Error(error?.detail ?? `Resume ${format.toUpperCase()} export failed.`);
+      throw new Error(formatApiErrorDetail(error?.detail, `Resume ${format.toUpperCase()} export failed.`));
     }
     throw new Error(`Resume ${format.toUpperCase()} export failed.`);
   }

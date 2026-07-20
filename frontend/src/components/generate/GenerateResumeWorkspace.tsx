@@ -452,6 +452,13 @@ export function GenerateResumeWorkspace({
               requirements={allRequirements}
               validationWarnings={[...localValidationWarnings, ...(validation?.warnings ?? []).map((item) => item.message)]}
               editable={canEdit}
+              authToken={authToken}
+              currentRecord={currentRecord}
+              onPersistedChange={(record) => {
+                setCurrentRecord(record);
+                setCurrentResume(record.resumeJson);
+                setRecentResumes((items) => items.map((item) => (item.resumeId === record.resumeId ? record : item)));
+              }}
               onChange={setCurrentResume}
             />
           )}

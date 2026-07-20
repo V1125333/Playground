@@ -1,5 +1,15 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { exportResumeDocx, exportResumePdf, generateResume, normalizeGenerateResumeResponse, saveResumeVersion, updateResume } from "./resumeService";
+import {
+  applySectionEnhancement,
+  enhanceResumeSection,
+  exportResumeDocx,
+  exportResumePdf,
+  generateResume,
+  matchProfile,
+  normalizeGenerateResumeResponse,
+  saveResumeVersion,
+  updateResume,
+} from "./resumeService";
 import { generatedResumeResponseFixture, structuredResumeFixture } from "../test/fixtures/resume";
 import { jobAnalysisFixture } from "../test/fixtures/jobAnalysis";
 
@@ -163,6 +173,35 @@ describe("resumeService", () => {
     expect(fetch).toHaveBeenCalledWith("/api/resumes/resume-123/versions", expect.objectContaining({ method: "POST" }));
   });
 
+  it("enhanceResumeSection targets the read-only enhancement endpoint", async () => {
+    globalThis.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ suggestions: [], validationStatus: "valid", warnings: [], resumeRevision: "rev-1" }),
+    }) as unknown as typeof fetch;
+
+    await enhanceResumeSection(token, "resume-123", {
+      sectionType: "summary",
+      sectionId: "section-summary",
+      currentText: "Original",
+    });
+
+    expect(fetch).toHaveBeenCalledWith("/api/resumes/resume-123/enhance-section", expect.objectContaining({ method: "POST" }));
+    const body = JSON.parse(String((vi.mocked(fetch).mock.calls[0][1] as RequestInit).body));
+    expect(body).toMatchObject({ sectionType: "summary", sectionId: "section-summary", currentText: "Original" });
+  });
+
+  it("applySectionEnhancement targets the explicit apply endpoint", async () => {
+    await applySectionEnhancement(token, "resume-123", {
+      sectionType: "summary",
+      sectionId: "section-summary",
+      suggestionId: "suggestion-1",
+    });
+
+    expect(fetch).toHaveBeenCalledWith("/api/resumes/resume-123/apply-section-enhancement", expect.objectContaining({ method: "POST" }));
+    const body = JSON.parse(String((vi.mocked(fetch).mock.calls[0][1] as RequestInit).body));
+    expect(body).toMatchObject({ suggestionId: "suggestion-1" });
+  });
+
   it("exportResumePdf handles binary blob and filename", async () => {
     const blob = new Blob(["%PDF"], { type: "application/pdf" });
     globalThis.fetch = vi.fn().mockResolvedValue({
@@ -212,6 +251,23 @@ describe("resumeService", () => {
     }) as unknown as typeof fetch;
 
     await expect(exportResumePdf(token, "resume-123")).rejects.toThrow("Validation failed.");
+  });
+
+  it("formats structured backend validation errors without leaking raw detail objects", async () => {
+    globalThis.fetch = vi.fn().mockResolvedValue({
+      ok: false,
+      json: async () => ({
+        detail: {
+          code: "SUMMARY_INTELLIGENCE_INVALID",
+          message: "Summary intelligence could not be validated. Review your profile evidence and run Analyze & Match again.",
+          details: [{ code: "UNSUPPORTED_TECHNOLOGY_CLAIM", message: "Summary claims unsupported technology: java." }],
+        },
+      }),
+    }) as unknown as typeof fetch;
+
+    await expect(matchProfile(token, { profileId: "profile-123" })).rejects.toThrow(
+      "Summary intelligence could not be validated. Review your profile evidence and run Analyze & Match again. Summary claims unsupported technology: java.",
+    );
   });
 
   it("export service rejects invalid content type", async () => {

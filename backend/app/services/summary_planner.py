@@ -47,6 +47,24 @@ class SummaryValidationCode(str, Enum):
     identical_technology_selection = "IDENTICAL_TECHNOLOGY_SELECTION"
 
 
+SUMMARY_STORAGE_BLOCKING_CODES = {
+    SummaryValidationCode.metadata_leakage,
+    SummaryValidationCode.raw_company_name_in_capability,
+    SummaryValidationCode.raw_client_name_in_capability,
+    SummaryValidationCode.location_leakage,
+    SummaryValidationCode.invalid_experience_display,
+    SummaryValidationCode.overloaded_technology_list,
+    SummaryValidationCode.unsupported_reputation_claim,
+    SummaryValidationCode.unsupported_technology_claim,
+    SummaryValidationCode.unsupported_capability_claim,
+    SummaryValidationCode.invented_metric,
+    SummaryValidationCode.internal_terminology,
+    SummaryValidationCode.invalid_evidence_id,
+    SummaryValidationCode.missing_identity,
+    SummaryValidationCode.invalid_length,
+}
+
+
 class SummaryEvidenceClass(str, Enum):
     responsibility = "responsibility"
     achievement = "achievement"
@@ -466,6 +484,14 @@ async def build_validated_summary(
     if not validation.is_valid:
         repaired = repair_summary_result(fallback, planner, validation)
         repaired_validation = validate_summary_result(repaired, planner)
+        if summary_validation_blocks_storage(repaired_validation.validation_codes):
+            conservative = conservative_summary_result(planner, [*validation.errors, *repaired_validation.errors])
+            conservative_validation = validate_summary_result(conservative, planner)
+            if summary_validation_blocks_storage(conservative_validation.validation_codes):
+                storage_safe = storage_safe_summary_result(planner, [*validation.errors, *repaired_validation.errors, *conservative_validation.errors])
+                storage_safe_validation = validate_summary_result(storage_safe, planner)
+                return SummaryBuildResult(planner, storage_safe, storage_safe_validation)
+            return SummaryBuildResult(planner, conservative, conservative_validation)
         return SummaryBuildResult(planner, repaired, repaired_validation)
     return SummaryBuildResult(planner, fallback, validation)
 
@@ -590,6 +616,8 @@ def validate_summary_result(result: SummaryGenerationResult, planner: SummaryPla
         if phrase_present(summary, term):
             add_error(SummaryValidationCode.location_leakage, f"Summary contains excluded location: {term}.")
     for term in planner.excluded_metadata_terms:
+        if metadata_term_allowed_by_identity(term, planner):
+            continue
         if phrase_present(summary, term):
             add_error(SummaryValidationCode.metadata_leakage, f"Summary contains excluded metadata term: {term}.")
     if mentions_leadership(summary) and not any(leadership_or_collaboration_term(value) for value in allowed_capabilities):
@@ -653,6 +681,97 @@ def repair_summary_result(
     fallback = deterministic_summary(planner)
     fallback.risk_flags = dedupe_text([*result.risk_flags, *validation.errors, "deterministic fallback used"])
     return fallback
+
+
+def conservative_summary_result(
+    planner: SummaryPlanner,
+    risk_flags: list[str] | None = None,
+) -> SummaryGenerationResult:
+    identity = planner.candidate_identity
+    title = identity.current_title or "Software engineer"
+    years = identity.years_of_experience_display or experience_display_value(identity.years_of_experience)
+    emphasis = planner.target_emphasis
+    theme = emphasis.target_work_themes[0] if emphasis.target_work_themes else "enterprise application development"
+    unsupported = {normalize_text(value) for value in planner.unsupported_jd_only_technologies}
+    technologies = []
+    for value in emphasis.top_supported_technologies:
+        canonical = canonical_summary_technology(value)
+        normalized = normalize_text(canonical)
+        if normalized and normalized not in unsupported:
+            technologies.append(canonical)
+    technologies = dedupe_text(technologies)[:4]
+    capabilities = [
+        value
+        for value in emphasis.top_supported_capabilities
+        if normalize_text(value) not in {normalize_text(item) for item in GENERIC_SUMMARY_CAPABILITIES}
+    ][:2]
+
+    first = f"{title} with {years} of experience in {theme}"
+    if technologies:
+        first += f" using {human_join(technologies)}"
+    first += "."
+    if capabilities:
+        second = f"Experienced in {human_join(capabilities)} while translating business requirements into maintainable technical changes."
+    else:
+        second = "Applies profile-supported engineering experience to deliver maintainable technical changes without unsupported stack claims."
+    terms = [*technologies, *capabilities]
+    return SummaryGenerationResult(
+        summary=clean_text(" ".join([first, second])),
+        usedEvidenceIds=planner_evidence_for_terms(planner, terms),
+        usedSignals=dedupe_text(terms),
+        excludedSignals=planner.unsupported_jd_only_technologies,
+        riskFlags=dedupe_text([*(risk_flags or []), "conservative summary fallback used"]),
+        generationMethod="deterministic_fallback",
+    )
+
+
+def storage_safe_summary_result(
+    planner: SummaryPlanner,
+    risk_flags: list[str] | None = None,
+) -> SummaryGenerationResult:
+    identity = planner.candidate_identity
+    title = identity.current_title or "Software engineer"
+    years = identity.years_of_experience_display or experience_display_value(identity.years_of_experience)
+    theme = planner.target_emphasis.target_work_themes[0] if planner.target_emphasis.target_work_themes else "enterprise application delivery"
+    summary = clean_text(
+        " ".join(
+            [
+                f"{title} with {years} of experience in {theme}.",
+                "Focuses on maintainable implementation, debugging, and cross-team delivery for enterprise software.",
+            ]
+        )
+    )
+    return SummaryGenerationResult(
+        summary=summary,
+        usedEvidenceIds=list(planner.evidence_ids)[:3],
+        usedSignals=dedupe_text([theme]),
+        excludedSignals=planner.unsupported_jd_only_technologies,
+        riskFlags=dedupe_text([*(risk_flags or []), "storage-safe summary fallback used"]),
+        generationMethod="deterministic_fallback",
+    )
+
+
+def summary_validation_blocks_storage(validation_codes: list[SummaryValidationCode]) -> bool:
+    return any(code in SUMMARY_STORAGE_BLOCKING_CODES for code in validation_codes)
+
+
+def metadata_term_allowed_by_identity(term: str, planner: SummaryPlanner) -> bool:
+    normalized_term = normalize_text(term)
+    if not normalized_term:
+        return False
+    identity_terms = [
+        planner.candidate_identity.current_title,
+        planner.candidate_identity.primary_positioning,
+    ]
+    for identity in identity_terms:
+        normalized_identity = normalize_text(identity)
+        if not normalized_identity:
+            continue
+        if normalized_term == normalized_identity:
+            return True
+        if whole_phrase_present(identity, term):
+            return True
+    return False
 
 
 def technology_signals(
@@ -1458,6 +1577,14 @@ def phrase_present(value: str, phrase: str) -> bool:
     return normalize_text(phrase) in normalize_text(value)
 
 
+def whole_phrase_present(value: str, phrase: str) -> bool:
+    normalized_value = normalize_text(value)
+    normalized_phrase = normalize_text(phrase)
+    if not normalized_phrase:
+        return False
+    return re.search(rf"(?<![a-z0-9]){re.escape(normalized_phrase)}(?![a-z0-9])", normalized_value) is not None
+
+
 def display_technology(value: str) -> str:
     mapping = {
         "c#": "C#",
@@ -1564,23 +1691,19 @@ def word_count(value: str) -> int:
 
 
 def mentions_leadership(value: str) -> bool:
-    normalized = normalize_text(value)
-    return any(term in normalized for term in LEADERSHIP_TERMS)
+    return any(whole_phrase_present(value, term) for term in LEADERSHIP_TERMS)
 
 
 def mentions_architecture(value: str) -> bool:
-    normalized = normalize_text(value)
-    return any(term in normalized for term in ARCHITECTURE_TERMS)
+    return any(whole_phrase_present(value, term) for term in ARCHITECTURE_TERMS)
 
 
 def leadership_or_collaboration_term(value: str) -> bool:
-    normalized = normalize_text(value)
-    return any(term in normalized for term in [*LEADERSHIP_TERMS, "collaboration", "stakeholder", "qa", "product owner"])
+    return any(whole_phrase_present(value, term) for term in [*LEADERSHIP_TERMS, "collaboration", "stakeholder", "qa", "product owner"])
 
 
 def architecture_term(value: str) -> bool:
-    normalized = normalize_text(value)
-    return any(term in normalized for term in ARCHITECTURE_TERMS)
+    return any(whole_phrase_present(value, term) for term in ARCHITECTURE_TERMS)
 
 
 def contains_invented_metric(summary: str, planner: SummaryPlanner) -> bool:

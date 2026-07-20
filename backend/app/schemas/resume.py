@@ -914,6 +914,7 @@ class StructuredGeneratedResume(BaseModel):
     warnings: list[str] = Field(default_factory=list)
     contact: ResumeContact
     sections: list[GeneratedResumeSection] = Field(default_factory=list)
+    enhancement_history: list[dict[str, Any]] = Field(default_factory=list, alias="enhancementHistory")
     created_at: str = Field(default="", alias="createdAt")
     updated_at: str = Field(default="", alias="updatedAt")
 
@@ -1024,6 +1025,60 @@ class StructuredResumeRecord(BaseModel):
 class UpdateStructuredResumeRequest(BaseModel):
     resume_json: StructuredGeneratedResume = Field(alias="resumeJson")
     status: str = "draft"
+
+    model_config = ConfigDict(populate_by_name=True)
+
+
+class SectionEnhancementRequest(BaseModel):
+    resume_id: str = Field(default="", alias="resumeId")
+    section_type: str = Field(alias="sectionType")
+    section_id: str = Field(alias="sectionId")
+    parent_section_id: str = Field(default="", alias="parentSectionId")
+    current_text: str = Field(default="", alias="currentText")
+    enhancement_mode: str = Field(default="polish", alias="enhancementMode")
+    instruction: str = ""
+    preserve_length: bool = Field(default=False, alias="preserveLength")
+    maximum_words: int = Field(default=80, alias="maximumWords")
+    source_evidence_ids: list[str] = Field(default_factory=list, alias="sourceEvidenceIds")
+    supported_requirement_ids: list[str] = Field(default_factory=list, alias="supportedRequirementIds")
+    expected_revision: str = Field(default="", alias="expectedRevision")
+
+    model_config = ConfigDict(populate_by_name=True)
+
+
+class SectionEnhancementSuggestion(BaseModel):
+    suggestion_id: str = Field(alias="suggestionId")
+    section_type: str = Field(alias="sectionType")
+    section_id: str = Field(alias="sectionId")
+    original_text: str = Field(alias="originalText")
+    enhanced_text: str = Field(alias="enhancedText")
+    explanation: str = ""
+    supporting_evidence_ids: list[str] = Field(default_factory=list, alias="supportingEvidenceIds")
+    supported_requirement_ids: list[str] = Field(default_factory=list, alias="supportedRequirementIds")
+    validation_status: str = Field(default="valid", alias="validationStatus")
+    warnings: list[str] = Field(default_factory=list)
+    model: str = ""
+    prompt_version: str = Field(default="", alias="promptVersion")
+    created_at: str = Field(default="", alias="createdAt")
+
+    model_config = ConfigDict(populate_by_name=True)
+
+
+class SectionEnhancementResponse(BaseModel):
+    suggestions: list[SectionEnhancementSuggestion] = Field(default_factory=list)
+    validation_status: str = Field(default="valid", alias="validationStatus")
+    warnings: list[str] = Field(default_factory=list)
+    resume_revision: str = Field(default="", alias="resumeRevision")
+
+    model_config = ConfigDict(populate_by_name=True)
+
+
+class SectionEnhancementApplyRequest(BaseModel):
+    resume_id: str = Field(default="", alias="resumeId")
+    section_type: str = Field(alias="sectionType")
+    section_id: str = Field(alias="sectionId")
+    suggestion_id: str = Field(alias="suggestionId")
+    expected_revision: str = Field(default="", alias="expectedRevision")
 
     model_config = ConfigDict(populate_by_name=True)
 

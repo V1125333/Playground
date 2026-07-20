@@ -7,11 +7,48 @@ from app.core.config import settings
 from app.schemas.resume import GenerateResumeRequest, SummaryIntelligence
 from app.services.resume_intelligence_store import job_description_hash, normalized
 from app.services.summary_generation_service import SUMMARY_PROMPT_VERSION
-from app.services.summary_planner import SummaryBuildResult, SummaryGenerationResult
+from app.services.summary_planner import (
+    SummaryBuildResult,
+    SummaryGenerationResult,
+    summary_validation_blocks_storage,
+    storage_safe_summary_result,
+    validate_summary_result,
+)
 
 
 SUMMARY_INTELLIGENCE_STALE_MESSAGE = "Summary intelligence is missing or stale. Run Analyze & Match again."
+SUMMARY_INTELLIGENCE_INVALID_CODE = "SUMMARY_INTELLIGENCE_INVALID"
+SUMMARY_INTELLIGENCE_INVALID_MESSAGE = (
+    "Summary intelligence could not be validated. Review your profile evidence and run Analyze & Match again."
+)
 
+
+class SummaryIntelligenceInvalidError(ValueError):
+    """Raised when a summary cannot be made safe enough for package reuse."""
+
+    def __init__(self, validation) -> None:
+        self.validation = validation
+        super().__init__(SUMMARY_INTELLIGENCE_INVALID_MESSAGE)
+
+    @property
+    def details(self) -> list[dict[str, str]]:
+        messages = [*self.validation.errors, *self.validation.warnings]
+        codes = list(self.validation.validation_codes)
+        if not messages:
+            return [{"code": "SUMMARY_VALIDATION_FAILED", "message": "Summary intelligence validation failed."}]
+
+        output: list[dict[str, str]] = []
+        for index, message in enumerate(messages):
+            code = codes[index] if index < len(codes) else "SUMMARY_VALIDATION_WARNING"
+            output.append({"code": str(getattr(code, "value", code)), "message": message})
+        return output
+
+    def api_detail(self) -> dict[str, object]:
+        return {
+            "code": SUMMARY_INTELLIGENCE_INVALID_CODE,
+            "message": SUMMARY_INTELLIGENCE_INVALID_MESSAGE,
+            "details": self.details,
+        }
 
 def summary_model_configuration_hash(model: str | None = None) -> str:
     payload = "|".join(
@@ -32,9 +69,22 @@ def build_summary_intelligence(
     profile_record,
     payload,
 ) -> SummaryIntelligence:
+    if not summary_build.validation.is_valid and summary_validation_blocks_storage(summary_build.validation.validation_codes):
+        storage_safe = storage_safe_summary_result(
+            summary_build.planner,
+            [*summary_build.validation.errors, *summary_build.generation.risk_flags],
+        )
+        summary_build = SummaryBuildResult(
+            planner=summary_build.planner,
+            generation=storage_safe,
+            validation=validate_summary_result(storage_safe, summary_build.planner),
+        )
+    if not summary_build.validation.is_valid and summary_validation_blocks_storage(summary_build.validation.validation_codes):
+        raise SummaryIntelligenceInvalidError(summary_build.validation)
+
     status = "fallback" if summary_build.generation.generation_method == "deterministic_fallback" else "valid"
     if not summary_build.validation.is_valid:
-        status = "invalid"
+        status = "fallback"
     return SummaryIntelligence(
         summary=summary_build.generation.summary,
         selectedTechnologies=summary_build.planner.target_emphasis.top_supported_technologies,
@@ -60,7 +110,6 @@ def build_summary_intelligence(
         modelConfigurationHash=summary_model_configuration_hash(model),
         createdAt=datetime.now(timezone.utc),
     )
-
 
 def summary_generation_from_intelligence(summary: SummaryIntelligence) -> SummaryGenerationResult:
     return SummaryGenerationResult(

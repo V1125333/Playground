@@ -32,8 +32,8 @@
       "name": "Venu Madhav Pendurthi",
       "email": "venumadhav.edu2021@gmail.com",
       "role": "user",
-      "password_hash": "HpSqdD/1IRm7ZmR9gBBQNcYcnMr/aID2ntT48F0l+i8=",
-      "salt": "567e94bf390bff7e0ca9db1db94ea6c5",
+      "password_hash": "otVe4eyMEKDZTl6YSYFW7Pd5BI7w9xNzvOG2WVymIpE=",
+      "salt": "68e97cbd185487d81116b5d854032e33",
       "totp_secret": "GA6H7XVKMKOPKPTRVFT3BZYOF67TLXMO",
       "totp_confirmed": true,
       "failed_attempts": 0,
@@ -120,6 +120,27 @@
       "temporary_password": "Temp-VzMoxluSF2A",
       "reason": "manual_temp_password_requested",
       "created_at": "2026-07-17T23:34:00.546894+00:00"
+    },
+    {
+      "email": "venumadhav.edu2021@gmail.com",
+      "name": "Venu Madhav Pendurthi",
+      "temporary_password": "Temp-coc7RU3Ez2o",
+      "reason": "three_failed_password_attempts",
+      "created_at": "2026-07-19T23:05:02.450813+00:00"
+    },
+    {
+      "email": "venumadhav.edu2021@gmail.com",
+      "name": "Venu Madhav Pendurthi",
+      "temporary_password": "Temp-zl97VZTeemU",
+      "reason": "forgot_password",
+      "created_at": "2026-07-19T23:06:07.584204+00:00"
+    },
+    {
+      "email": "venumadhav.edu2021@gmail.com",
+      "name": "Venu Madhav Pendurthi",
+      "temporary_password": "Temp-yqk_lmdV0N8",
+      "reason": "manual_admin_reset",
+      "created_at": "2026-07-19T23:06:11.698793+00:00"
     }
   ]
 }

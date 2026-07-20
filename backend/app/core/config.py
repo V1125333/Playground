@@ -26,6 +26,12 @@ class Settings(BaseSettings):
     experience_writer_prompt_version: str = Field(default="experience-writer-v1", alias="EXPERIENCE_WRITER_PROMPT_VERSION")
     ai_experience_max_role_calls: int = Field(default=6, alias="AI_EXPERIENCE_MAX_ROLE_CALLS")
     ai_experience_concurrency: int = Field(default=2, alias="AI_EXPERIENCE_CONCURRENCY")
+    ai_section_enhancement_enabled: bool = Field(default=True, alias="AI_SECTION_ENHANCEMENT_ENABLED")
+    openai_section_enhancement_model: str = Field(default="gpt-4o-mini", alias="OPENAI_SECTION_ENHANCEMENT_MODEL")
+    openai_section_enhancement_max_output_tokens: int = Field(default=800, alias="OPENAI_SECTION_ENHANCEMENT_MAX_OUTPUT_TOKENS")
+    openai_section_enhancement_timeout_seconds: int = Field(default=30, alias="OPENAI_SECTION_ENHANCEMENT_TIMEOUT_SECONDS")
+    section_enhancement_prompt_version: str = Field(default="section-enhancement-v1", alias="SECTION_ENHANCEMENT_PROMPT_VERSION")
+    section_enhancement_max_retries: int = Field(default=1, alias="SECTION_ENHANCEMENT_MAX_RETRIES")
     ai_pricing_json: str = Field(default="", alias="AI_PRICING_JSON")
     ai_usage_db_path: str = Field(default="backend/data/ai_usage.sqlite3", alias="AI_USAGE_DB_PATH")
     database_url: str = Field(

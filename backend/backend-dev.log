@@ -1,0 +1,19 @@
+INFO:     127.0.0.1:59860 - "POST /api/resumes/test/enhance-section HTTP/1.1" 422 Unprocessable Content
+INFO:     127.0.0.1:51200 - "GET /api/resumes HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51201 - "GET /api/profiles/primary HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51205 - "GET /api/profiles/primary HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51204 - "GET /api/resumes HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51206 - "GET /api/resumes HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51207 - "GET /api/resumes HTTP/1.1" 200 OK
+INFO:     127.0.0.1:65132 - "GET /api/resumes/3bb8fcc8-1ad4-4202-942c-511dcb7b1391/versions HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58631 - "PUT /api/resumes/3bb8fcc8-1ad4-4202-942c-511dcb7b1391 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:61892 - "POST /api/resumes/3bb8fcc8-1ad4-4202-942c-511dcb7b1391/enhance-section HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:61483 - "GET /api/profiles/primary HTTP/1.1" 200 OK
+INFO:     127.0.0.1:61482 - "GET /api/resumes HTTP/1.1" 200 OK
+INFO:     127.0.0.1:61484 - "GET /api/profiles/primary HTTP/1.1" 200 OK
+INFO:     127.0.0.1:61485 - "GET /api/resumes HTTP/1.1" 200 OK
+INFO:     127.0.0.1:61486 - "GET /api/resumes HTTP/1.1" 200 OK
+INFO:     127.0.0.1:61487 - "GET /api/resumes HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58178 - "GET /api/resumes/3bb8fcc8-1ad4-4202-942c-511dcb7b1391/versions HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57269 - "PUT /api/resumes/3bb8fcc8-1ad4-4202-942c-511dcb7b1391 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51800 - "POST /api/resumes/3bb8fcc8-1ad4-4202-942c-511dcb7b1391/enhance-section HTTP/1.1" 503 Service Unavailable

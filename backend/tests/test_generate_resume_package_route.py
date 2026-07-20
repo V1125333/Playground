@@ -29,8 +29,15 @@ from app.services.resume_intelligence_store import (
     ResumeIntelligencePackageStaleError,
 )
 from app.services.summary_generation_service import SUMMARY_PROMPT_VERSION
-from app.services.summary_intelligence import summary_model_configuration_hash
-from app.services.summary_planner import SummaryBuildResult, SummaryGenerationResult, SummaryValidationResult
+from app.services import summary_intelligence as summary_intelligence_service
+from app.services.summary_intelligence import (
+    SUMMARY_INTELLIGENCE_INVALID_CODE,
+    SUMMARY_INTELLIGENCE_INVALID_MESSAGE,
+    SummaryIntelligenceInvalidError,
+    build_summary_intelligence,
+    summary_model_configuration_hash,
+)
+from app.services.summary_planner import SummaryBuildResult, SummaryGenerationResult, SummaryValidationCode, SummaryValidationResult
 from app.services.experience_planner import EXPERIENCE_PLANNER_VERSION
 from app.services.experience_prompt_builder import EXPERIENCE_PROMPT_VERSION
 from app.services.experience_generation_service import experience_model_configuration_hash
@@ -250,6 +257,129 @@ def summary_intelligence_json(record) -> dict:
         "modelConfigurationHash": summary_model_configuration_hash("gpt-5.5"),
         "createdAt": "2026-07-18T00:00:00+00:00",
     }
+
+
+def test_quality_only_summary_validation_warnings_do_not_break_package_reuse() -> None:
+    profile = candidate_profile()
+    record = profile_record(profile)
+    _, request, context, planner = planner_for_package_test(profile)
+
+    summary = build_summary_intelligence(
+        summary_build=SummaryBuildResult(
+            planner=planner,
+            generation=SummaryGenerationResult(
+                summary=STORED_SUMMARY,
+                usedEvidenceIds=["skill-csharp"],
+                usedSignals=["C#"],
+                excludedSignals=[],
+                riskFlags=[],
+                generationMethod="deterministic_fallback",
+            ),
+            validation=SummaryValidationResult(
+                isValid=False,
+                errors=["Summary does not include enough JD-specific supported signals."],
+                validationCodes=[SummaryValidationCode.insufficient_jd_adaptation],
+            ),
+        ),
+        model="gpt-5.5",
+        profile_record=record,
+        payload=request,
+    )
+
+    assert summary.validation_status == "fallback"
+    assert "Summary does not include enough JD-specific supported signals." in summary.validation_warnings
+
+
+def test_blocking_summary_validation_uses_storage_safe_fallback_for_package_reuse() -> None:
+    profile = candidate_profile()
+    record = profile_record(profile)
+    _, request, context, planner = planner_for_package_test(profile)
+
+    summary = build_summary_intelligence(
+        summary_build=SummaryBuildResult(
+            planner=planner,
+            generation=SummaryGenerationResult(
+                summary="Senior .NET Developer with 9+ years of experience building Java and AWS systems.",
+                usedEvidenceIds=["skill-csharp"],
+                usedSignals=["Java", "AWS"],
+                excludedSignals=[],
+                riskFlags=[],
+                generationMethod="deterministic_fallback",
+            ),
+            validation=SummaryValidationResult(
+                isValid=False,
+                errors=["Summary claims unsupported technology: java."],
+                validationCodes=[SummaryValidationCode.unsupported_technology_claim],
+            ),
+        ),
+        model="gpt-5.5",
+        profile_record=record,
+        payload=request,
+    )
+
+    assert summary.validation_status == "fallback"
+    assert "Java" not in summary.summary
+    assert "AWS" not in summary.summary
+    assert "storage-safe summary fallback used" in summary.risk_flags
+
+
+def test_blocking_summary_validation_raises_clean_error_when_storage_safe_fallback_is_invalid(monkeypatch) -> None:
+    profile = candidate_profile()
+    record = profile_record(profile)
+    _, request, context, planner = planner_for_package_test(profile)
+
+    def invalid_storage_safe_result(_planner, _risk_flags=None):
+        return SummaryGenerationResult(
+            summary="Senior .NET Developer with 9+ years of experience building Java and AWS systems.",
+            usedEvidenceIds=["missing-evidence"],
+            usedSignals=["Java", "AWS"],
+            excludedSignals=[],
+            riskFlags=["storage-safe summary fallback used"],
+            generationMethod="deterministic_fallback",
+        )
+
+    monkeypatch.setattr(summary_intelligence_service, "storage_safe_summary_result", invalid_storage_safe_result)
+
+    with pytest.raises(SummaryIntelligenceInvalidError) as exc_info:
+        build_summary_intelligence(
+            summary_build=SummaryBuildResult(
+                planner=planner,
+                generation=SummaryGenerationResult(
+                    summary="Senior .NET Developer with 9+ years of experience building Java and AWS systems.",
+                    usedEvidenceIds=["skill-csharp"],
+                    usedSignals=["Java", "AWS"],
+                    excludedSignals=[],
+                    riskFlags=[],
+                    generationMethod="deterministic_fallback",
+                ),
+                validation=SummaryValidationResult(
+                    isValid=False,
+                    errors=["Summary claims unsupported technology: java."],
+                    validationCodes=[SummaryValidationCode.unsupported_technology_claim],
+                ),
+            ),
+            model="gpt-5.5",
+            profile_record=record,
+            payload=request,
+        )
+
+    detail = exc_info.value.api_detail()
+    assert detail["code"] == SUMMARY_INTELLIGENCE_INVALID_CODE
+    assert detail["message"] == SUMMARY_INTELLIGENCE_INVALID_MESSAGE
+    assert detail["details"]
+    assert "pydantic" not in str(detail).casefold()
+    assert "errors.pydantic.dev" not in str(detail).casefold()
+
+
+def planner_for_package_test(profile: CandidateProfile):
+    from app.services.profile_matching import build_profile_evidence_index, match_job_to_profile
+    from app.services.summary_planner import build_summary_planner
+
+    request = resumes_route.ProfileMatchRequest.model_validate(match_payload())
+    match_response = match_job_to_profile(request.job_analysis, profile, PROFILE_ID, "2026-07-18T00:00:00+00:00", 7, compute_profile_content_hash(profile))
+    evidence_index = build_profile_evidence_index(profile, PROFILE_ID)
+    planner = build_summary_planner(profile, request, match_response.match_summary, evidence_index, 9.0)
+    return match_response, request, evidence_index, planner
 
 
 def experience_intelligence_json() -> dict:
@@ -602,6 +732,64 @@ def test_match_profile_route_creates_package_with_summary_intelligence(monkeypat
     assert body["skillsIntelligence"]["includedSkills"]
     assert captured["summary_intelligence"].model == "gpt-5.5"
     assert captured["summary_planner"].target_emphasis.top_supported_technologies
+
+
+def test_match_profile_route_returns_sanitized_summary_intelligence_error(monkeypatch) -> None:
+    profile = candidate_profile()
+    record = profile_record(profile)
+
+    async def fake_get_profile(_session, user_id, profile_id):
+        assert user_id == USER_ID
+        assert profile_id == PROFILE_ID
+        return record
+
+    async def fake_generate_summary(**kwargs):
+        return SummaryBuildResult(
+            planner=kwargs["planner"],
+            generation=SummaryGenerationResult(
+                summary="Senior .NET Developer with 9+ years of experience building Java and AWS systems.",
+                usedEvidenceIds=["skill-csharp"],
+                usedSignals=["Java", "AWS"],
+                excludedSignals=[],
+                riskFlags=[],
+                generationMethod="openai",
+            ),
+            validation=SummaryValidationResult(isValid=True),
+        )
+
+    def fake_build_summary_intelligence(**_kwargs):
+        raise SummaryIntelligenceInvalidError(
+            SummaryValidationResult(
+                isValid=False,
+                errors=["Summary claims unsupported technology: java."],
+                validationCodes=[SummaryValidationCode.unsupported_technology_claim],
+            )
+        )
+
+    async def fail_create_package(*_args, **_kwargs):
+        raise AssertionError("invalid summary intelligence must not be persisted.")
+
+    monkeypatch.setattr(resumes_route.profile_service, "get_profile", fake_get_profile)
+    monkeypatch.setattr(resumes_route, "generate_summary", fake_generate_summary)
+    monkeypatch.setattr(resumes_route, "build_summary_intelligence", fake_build_summary_intelligence)
+    monkeypatch.setattr(resumes_route, "create_resume_intelligence_package", fail_create_package)
+    app.dependency_overrides[resumes_route.db_session] = fake_session
+    app.dependency_overrides[resumes_route.optional_current_user_id] = lambda: USER_ID
+
+    response = TestClient(app).post("/api/resumes/match-profile", json=match_payload())
+
+    assert response.status_code == 400, response.text
+    detail = response.json()["detail"]
+    assert detail["code"] == SUMMARY_INTELLIGENCE_INVALID_CODE
+    assert detail["message"] == SUMMARY_INTELLIGENCE_INVALID_MESSAGE
+    assert detail["details"] == [
+        {
+            "code": SummaryValidationCode.unsupported_technology_claim.value,
+            "message": "Summary claims unsupported technology: java.",
+        }
+    ]
+    assert "pydantic" not in response.text.casefold()
+    assert "errors.pydantic.dev" not in response.text.casefold()
 
 
 def test_generate_route_rejects_stale_package_without_rematching(monkeypatch) -> None:

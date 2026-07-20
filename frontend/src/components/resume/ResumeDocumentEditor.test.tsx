@@ -1,9 +1,10 @@
-import { render, screen } from "@testing-library/react";
+import { render, screen, waitFor } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import { ResumeDocumentEditor } from "./ResumeDocumentEditor";
 import { profileFixture } from "../../test/fixtures/profile";
-import { structuredResumeFixture } from "../../test/fixtures/resume";
-import type { StructuredGeneratedResume } from "../../resume/types";
+import { resumeRecordFixture, structuredResumeFixture } from "../../test/fixtures/resume";
+import type { GeneratedResumeSection, StructuredGeneratedResume, StructuredResumeRecord } from "../../resume/types";
 
 function renderEditor(resume: StructuredGeneratedResume) {
   render(
@@ -82,3 +83,106 @@ describe("ResumeDocumentEditor header visibility", () => {
     expect(screen.getByText("PROFESSIONAL EXPERIENCE")).toBeInTheDocument();
   });
 });
+
+describe("ResumeDocumentEditor section enhancement", () => {
+  it("opens a safe preview dialog and applies an accepted summary enhancement", async () => {
+    const user = userEvent.setup();
+    const onChange = vi.fn();
+    const onPersistedChange = vi.fn();
+    const updatedRecord = recordWithSummary("Improved summary with supported C# and SQL Server evidence.");
+    globalThis.fetch = vi.fn()
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          suggestions: [
+            {
+              suggestionId: "suggestion-1",
+              sectionType: "summary",
+              sectionId: "section-summary",
+              originalText: "Senior .NET Developer with enterprise C# and API delivery experience.",
+              enhancedText: "Improved summary with supported C# and SQL Server evidence.",
+              explanation: "Polished wording while preserving supported facts.",
+              supportingEvidenceIds: ["ev-infosys-api"],
+              supportedRequirementIds: ["req-c"],
+              validationStatus: "valid",
+              warnings: [],
+              model: "gpt-5.5-mini",
+              promptVersion: "section-enhancement-v1",
+              createdAt: "2026-07-19T00:00:00.000Z",
+            },
+          ],
+          validationStatus: "valid",
+          warnings: [],
+          resumeRevision: resumeRecordFixture.updatedAt,
+        }),
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => updatedRecord,
+      }) as unknown as typeof fetch;
+
+    render(
+      <ResumeDocumentEditor
+        resume={structuredResumeFixture}
+        profile={profileFixture.profileData}
+        evidence={[]}
+        requirements={[]}
+        validationWarnings={[]}
+        editable
+        authToken="token-123"
+        currentRecord={resumeRecordFixture}
+        onChange={onChange}
+        onPersistedChange={onPersistedChange}
+      />,
+    );
+
+    await user.click(screen.getByLabelText("Enhance SUMMARY with AI"));
+
+    expect(screen.getByRole("heading", { name: "Enhance with AI" })).toBeInTheDocument();
+    expect(screen.getByText("AI can polish wording only. It cannot add unsupported experience.")).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Enhance" }));
+
+    expect(await screen.findByText("Improved summary with supported C# and SQL Server evidence.")).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Apply" }));
+
+    await waitFor(() => expect(onPersistedChange).toHaveBeenCalledWith(updatedRecord));
+    expect(onChange).toHaveBeenCalledWith(updatedRecord.resumeJson);
+    expect(fetch).toHaveBeenNthCalledWith(1, "/api/resumes/resume-123/enhance-section", expect.objectContaining({ method: "POST" }));
+    expect(fetch).toHaveBeenNthCalledWith(2, "/api/resumes/resume-123/apply-section-enhancement", expect.objectContaining({ method: "POST" }));
+  });
+
+  it("does not allow free-form AI enhancement for skills", () => {
+    render(
+      <ResumeDocumentEditor
+        resume={structuredResumeFixture}
+        profile={profileFixture.profileData}
+        evidence={[]}
+        requirements={[]}
+        validationWarnings={[]}
+        editable
+        authToken="token-123"
+        currentRecord={resumeRecordFixture}
+        onChange={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByLabelText("Skills enhancement unavailable")).toBeDisabled();
+  });
+});
+
+function recordWithSummary(summary: string): StructuredResumeRecord {
+  const resumeJson: StructuredGeneratedResume = {
+    ...structuredResumeFixture,
+    sections: structuredResumeFixture.sections.map((section): GeneratedResumeSection => (
+      section.sectionId === "section-summary" ? { ...section, content: summary } : section
+    )),
+    updatedAt: "2026-07-19T00:00:00.000Z",
+  };
+  return {
+    ...resumeRecordFixture,
+    resumeJson,
+    updatedAt: "2026-07-19T00:00:00.000Z",
+  };
+}

@@ -24,6 +24,7 @@ MODEL_KEY_TO_SETTING = {
     "resume_generation": "ai_model_resume_generation",
     "summary_generation": "openai_summary_model",
     "experience_generation": "openai_experience_model",
+    "section_enhancement": "openai_section_enhancement_model",
     "ats_validation": "ai_model_ats_validation",
     "formatting": "ai_model_formatting",
 }

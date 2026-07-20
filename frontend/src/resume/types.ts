@@ -387,6 +387,7 @@ export type StructuredGeneratedResume = {
   warnings: string[];
   contact: GeneratedResume["contact"];
   sections: GeneratedResumeSection[];
+  enhancementHistory?: Array<Record<string, unknown>>;
   createdAt: string;
   updatedAt: string;
 };
@@ -607,4 +608,36 @@ export type StructuredResumeRecord = {
   parentResumeId: string;
   createdAt: string;
   updatedAt: string;
+};
+
+export type EnhancementMode =
+  | "polish"
+  | "concise"
+  | "strengthen"
+  | "ats_optimize"
+  | "grammar"
+  | "reduce_repetition"
+  | "custom";
+
+export type SectionEnhancementSuggestion = {
+  suggestionId: string;
+  sectionType: string;
+  sectionId: string;
+  originalText: string;
+  enhancedText: string;
+  explanation: string;
+  supportingEvidenceIds: string[];
+  supportedRequirementIds: string[];
+  validationStatus: string;
+  warnings: string[];
+  model: string;
+  promptVersion: string;
+  createdAt: string;
+};
+
+export type SectionEnhancementResponse = {
+  suggestions: SectionEnhancementSuggestion[];
+  validationStatus: string;
+  warnings: string[];
+  resumeRevision: string;
 };

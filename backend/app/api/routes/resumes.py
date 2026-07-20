@@ -18,6 +18,9 @@ from app.schemas.resume import (
     RequirementIntelligenceResponse,
     ResumeStrategyRequest,
     ResumeStrategyResponse,
+    SectionEnhancementApplyRequest,
+    SectionEnhancementRequest,
+    SectionEnhancementResponse,
     StructuredResumeRecord,
     UpdateStructuredResumeRequest,
 )
@@ -59,6 +62,7 @@ from app.services.resume_intelligence_store import (
 )
 from app.services.summary_intelligence import (
     SUMMARY_INTELLIGENCE_STALE_MESSAGE,
+    SummaryIntelligenceInvalidError,
     build_summary_intelligence,
     summary_generation_from_intelligence,
     validate_summary_intelligence_for_package,
@@ -73,6 +77,11 @@ from app.services.resume_store import (
     list_resumes,
     save_resume_version,
     update_resume,
+)
+from app.services.resume_section_enhancement import (
+    SectionEnhancementError,
+    apply_section_enhancement_to_resume,
+    generate_section_enhancement,
 )
 from app.services.resume_validator import validate_structured_resume
 from app.services.summary_generation_service import generate_summary
@@ -381,6 +390,8 @@ async def match_resume_profile(
         raise HTTPException(status_code=403, detail=str(exc)) from exc
     except ProfileNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except SummaryIntelligenceInvalidError as exc:
+        raise HTTPException(status_code=400, detail=exc.api_detail()) from exc
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except Exception as exc:
@@ -498,6 +509,8 @@ async def create_resume(
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except ResumeIntelligencePackageStaleError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except SummaryIntelligenceInvalidError as exc:
+        raise HTTPException(status_code=400, detail=exc.api_detail()) from exc
     except Exception as exc:
         raise HTTPException(status_code=502, detail=f"Resume generation failed: {exc}") from exc
 
@@ -543,6 +556,49 @@ async def update_structured_resume(
         raise HTTPException(status_code=403, detail=str(exc)) from exc
     except ResumeNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@router.post("/{resume_id}/enhance-section", response_model=SectionEnhancementResponse)
+async def enhance_resume_section(
+    resume_id: str,
+    payload: SectionEnhancementRequest,
+    session: AsyncSession = Depends(db_session),
+    user_id=Depends(optional_current_user_id),
+) -> SectionEnhancementResponse:
+    if user_id is None:
+        raise HTTPException(status_code=401, detail="Missing bearer token.")
+    try:
+        record = await get_resume(session, user_id, resume_id)
+        request = payload.model_copy(update={"resume_id": resume_id})
+        return await generate_section_enhancement(record, request, user_id=str(user_id))
+    except ResumeOwnershipError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except ResumeNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except SectionEnhancementError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.api_detail()) from exc
+
+
+@router.post("/{resume_id}/apply-section-enhancement", response_model=StructuredResumeRecord)
+async def apply_resume_section_enhancement(
+    resume_id: str,
+    payload: SectionEnhancementApplyRequest,
+    session: AsyncSession = Depends(db_session),
+    user_id=Depends(optional_current_user_id),
+) -> StructuredResumeRecord:
+    if user_id is None:
+        raise HTTPException(status_code=401, detail="Missing bearer token.")
+    try:
+        record = await get_resume(session, user_id, resume_id)
+        request = payload.model_copy(update={"resume_id": resume_id})
+        updated_resume = apply_section_enhancement_to_resume(record, request)
+        return await update_resume(session, user_id, resume_id, updated_resume, updated_resume.status)
+    except ResumeOwnershipError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except ResumeNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except SectionEnhancementError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.api_detail()) from exc
 
 
 @router.post("/{resume_id}/versions", response_model=StructuredResumeRecord)

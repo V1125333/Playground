@@ -14,8 +14,11 @@ from app.services.summary_planner import (
     SummaryGenerationResult,
     SummaryPlanner,
     clean_text,
+    conservative_summary_result,
     deterministic_summary,
     repair_summary_result,
+    summary_validation_blocks_storage,
+    storage_safe_summary_result,
     validate_summary_result,
 )
 
@@ -121,6 +124,14 @@ async def generate_summary(
     if not validation.is_valid:
         repaired = repair_summary_result(fallback, planner, validation).model_copy(update={"generation_method": "deterministic_fallback"})
         repaired_validation = validate_summary_result(repaired, planner)
+        if summary_validation_blocks_storage(repaired_validation.validation_codes):
+            conservative = conservative_summary_result(planner, [*validation.errors, *repaired_validation.errors])
+            conservative_validation = validate_summary_result(conservative, planner)
+            if summary_validation_blocks_storage(conservative_validation.validation_codes):
+                storage_safe = storage_safe_summary_result(planner, [*validation.errors, *repaired_validation.errors, *conservative_validation.errors])
+                storage_safe_validation = validate_summary_result(storage_safe, planner)
+                return SummaryBuildResult(planner=planner, generation=storage_safe, validation=storage_safe_validation)
+            return SummaryBuildResult(planner=planner, generation=conservative, validation=conservative_validation)
         return SummaryBuildResult(planner=planner, generation=repaired, validation=repaired_validation)
     return SummaryBuildResult(planner=planner, generation=fallback, validation=validation)
 

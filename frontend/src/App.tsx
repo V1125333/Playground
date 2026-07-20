@@ -39,6 +39,7 @@ import {
 } from "recharts";
 import { Badge, Button, Card, Input, Progress, Select } from "./components/ui";
 import { GenerateResumeWorkspace } from "./components/generate/GenerateResumeWorkspace";
+import { ResumeDocumentEditor } from "./components/resume/ResumeDocumentEditor";
 import { cn } from "./lib/utils";
 import jobyroIcon from "./assets/jobyro-icon-teal.png";
 import { ResumeDocument } from "./resume/ResumeDocument";
@@ -50,9 +51,17 @@ import type {
   JobAnalysisResponse,
   JobKeywordAnalysisItem,
   SkillCategory,
+  StructuredResumeRecord,
 } from "./resume/types";
 import { createProfile, getPrimaryProfile, updateProfile } from "./services/profileService";
-import { generateResume as generateStructuredResume } from "./services/resumeService";
+import {
+  deleteResume as deleteSavedResume,
+  exportResumeDocx,
+  exportResumePdf,
+  generateResume as generateStructuredResume,
+  getResume,
+  listResumes,
+} from "./services/resumeService";
 import {
   clean,
   datePrecedes,
@@ -474,6 +483,34 @@ function saveStoredResumes(resumes: ResumeRow[]) {
   window.localStorage.setItem(RESUME_HISTORY_STORAGE_KEY, JSON.stringify(resumes));
 }
 
+function normalizeResumeStatus(status: string | null | undefined): ResumeStatus {
+  const normalized = (status ?? "").trim().toLowerCase();
+  if (normalized === "applied") return "Applied";
+  if (normalized === "interview") return "Interview";
+  if (normalized === "offer") return "Offer";
+  if (normalized === "rejected") return "Rejected";
+  return "Draft";
+}
+
+function formatResumeCreatedDate(value: string | null | undefined) {
+  const date = value ? new Date(value) : new Date();
+  if (Number.isNaN(date.getTime())) {
+    return new Date().toLocaleDateString("en-US", { day: "2-digit", month: "short", year: "numeric" });
+  }
+  return date.toLocaleDateString("en-US", { day: "2-digit", month: "short", year: "numeric" });
+}
+
+function resumeRowFromRecord(record: StructuredResumeRecord): ResumeRow {
+  return {
+    id: record.resumeId,
+    role: record.targetJobTitle || record.resumeJson?.targetJobTitle || record.resumeName || "Generated resume",
+    company: record.targetCompany || record.resumeJson?.targetCompany || "Target company",
+    ats: Math.round(record.matchScore ?? record.resumeJson?.matchScore ?? 0),
+    status: normalizeResumeStatus(record.status || record.resumeJson?.status),
+    created: formatResumeCreatedDate(record.createdAt || record.resumeJson?.createdAt),
+  };
+}
+
 function loadSidebarCollapsed() {
   if (typeof window === "undefined") return false;
   return window.localStorage.getItem(SIDEBAR_COLLAPSED_KEY) === "true";
@@ -563,6 +600,31 @@ export default function App() {
     };
   }, [authToken, authUser, clearAuthSession]);
 
+  useEffect(() => {
+    if (!authToken || !authUser) return;
+    let cancelled = false;
+
+    async function loadBackendResumeHistory() {
+      try {
+        const records = await listResumes(authToken);
+        if (cancelled) return;
+        const rows = records.map(resumeRowFromRecord);
+        setResumes(rows);
+        saveStoredResumes(rows);
+      } catch (error) {
+        if (cancelled) return;
+        if (isInvalidSessionError(error)) {
+          clearAuthSession();
+        }
+      }
+    }
+
+    void loadBackendResumeHistory();
+    return () => {
+      cancelled = true;
+    };
+  }, [authToken, authUser, clearAuthSession]);
+
   const updateStatus = (id: string, status: ResumeStatus) => {
     setResumes((current) => {
       const next = current.map((resume) => (resume.id === id ? { ...resume, status } : resume));
@@ -571,11 +633,28 @@ export default function App() {
     });
   };
 
+  const deleteHistoryRecord = async (id: string) => {
+    const previous = resumes;
+    const next = previous.filter((resume) => resume.id !== id);
+    setResumes(next);
+    saveStoredResumes(next);
+
+    if (!authToken || id.startsWith("generated-")) return;
+
+    try {
+      await deleteSavedResume(authToken, id);
+    } catch (error) {
+      setResumes(previous);
+      saveStoredResumes(previous);
+      window.alert(error instanceof Error ? error.message : "Could not delete resume record.");
+    }
+  };
+
   const addGeneratedResume = (generation: GeneratedResumeResponse, target?: { role?: string; company?: string }) => {
     setResumes((current) => {
       const primaryExperience = generation.resume.experience[0];
       const row: ResumeRow = {
-        id: `generated-${Date.now()}`,
+        id: generation.resumeId || generation.persistedResumeId || `generated-${Date.now()}`,
         role: target?.role || generation.resume.title || "Generated resume",
         company: target?.company || primaryExperience?.company || "Target company",
         ats: generation.atsAnalysis?.score ?? generation.atsScore,
@@ -659,7 +738,7 @@ export default function App() {
                 />
               }
             />
-            <Route path="/history" element={<HistoryPage resumes={resumes} updateStatus={updateStatus} />} />
+            <Route path="/history" element={<HistoryPage resumes={resumes} updateStatus={updateStatus} deleteRecord={deleteHistoryRecord} authToken={authToken} />} />
             <Route path="/analytics" element={<AnalyticsPage resumes={resumes} />} />
             <Route path="/interview" element={<InterviewPage />} />
             <Route path="/templates" element={<PlaceholderPage title="Templates" description="Resume templates will be connected after the editor workflow is complete." />} />
@@ -3586,14 +3665,81 @@ function ResumePreview({
   );
 }
 
+function triggerDownload(blob: Blob, filename: string) {
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement("a");
+  anchor.href = url;
+  anchor.download = filename;
+  document.body.appendChild(anchor);
+  anchor.click();
+  anchor.remove();
+  URL.revokeObjectURL(url);
+}
+
 function HistoryPage({
   resumes,
   updateStatus,
+  deleteRecord,
+  authToken,
 }: {
   resumes: ResumeRow[];
   updateStatus: (id: string, status: ResumeStatus) => void;
+  deleteRecord: (id: string) => void | Promise<void>;
+  authToken: string;
 }) {
   const navigate = useNavigate();
+  const [resumeToDelete, setResumeToDelete] = useState<ResumeRow | null>(null);
+  const [isDeleting, setIsDeleting] = useState(false);
+  const [viewRecord, setViewRecord] = useState<StructuredResumeRecord | null>(null);
+  const [viewError, setViewError] = useState("");
+  const [loadingRecordId, setLoadingRecordId] = useState("");
+  const [exporting, setExporting] = useState<{ id: string; format: "pdf" | "docx" } | null>(null);
+
+  const confirmDelete = async () => {
+    if (!resumeToDelete) return;
+    setIsDeleting(true);
+    try {
+      await deleteRecord(resumeToDelete.id);
+      setResumeToDelete(null);
+    } finally {
+      setIsDeleting(false);
+    }
+  };
+
+  const loadHistoryRecord = async (resume: ResumeRow) => {
+    if (resume.id.startsWith("generated-")) {
+      throw new Error("This older history row was created before saved previews were available. Generate it again to view or download it.");
+    }
+    return getResume(authToken, resume.id);
+  };
+
+  const openHistoryRecord = async (resume: ResumeRow) => {
+    setViewError("");
+    setLoadingRecordId(resume.id);
+    try {
+      setViewRecord(await loadHistoryRecord(resume));
+    } catch (error) {
+      setViewError(error instanceof Error ? error.message : "Could not open resume record.");
+    } finally {
+      setLoadingRecordId("");
+    }
+  };
+
+  const exportHistoryRecord = async (resume: ResumeRow, format: "pdf" | "docx") => {
+    setViewError("");
+    setExporting({ id: resume.id, format });
+    try {
+      const record = await loadHistoryRecord(resume);
+      const result = format === "pdf"
+        ? await exportResumePdf(authToken, record.resumeId, { templateId: record.templateId, paperSize: "letter" })
+        : await exportResumeDocx(authToken, record.resumeId, { templateId: record.templateId, paperSize: "letter" });
+      triggerDownload(result.blob, result.filename);
+    } catch (error) {
+      setViewError(error instanceof Error ? error.message : `Could not download ${format.toUpperCase()} file.`);
+    } finally {
+      setExporting(null);
+    }
+  };
 
   return (
     <PageFrame>
@@ -3611,14 +3757,19 @@ function HistoryPage({
           New resume
         </Button>
       </div>
+      {viewError && (
+        <div className="mb-4 rounded-md border border-red-200 bg-red-50 px-4 py-3 text-sm font-semibold text-red-700">
+          {viewError}
+        </div>
+      )}
       <Card className="overflow-hidden rounded-md">
-        <div className="grid grid-cols-[1.25fr_0.6fr_0.35fr_0.9fr_0.7fr_80px] border-b border-slate-200 bg-slate-50 px-5 py-4 text-sm font-bold uppercase tracking-wider text-slate-500">
+        <div className="grid grid-cols-[1.25fr_0.6fr_0.35fr_0.9fr_0.7fr_220px] border-b border-slate-200 bg-slate-50 px-5 py-4 text-sm font-bold uppercase tracking-wider text-slate-500">
           <span>Role</span>
           <span>Company</span>
           <span>ATS</span>
           <span>Application status</span>
           <span>Created</span>
-          <span />
+          <span className="text-right">Actions</span>
         </div>
         {resumes.length === 0 && (
           <div className="p-8 text-slate-500">
@@ -3626,7 +3777,7 @@ function HistoryPage({
           </div>
         )}
         {resumes.map((resume) => (
-          <div key={resume.id} className="grid grid-cols-[1.25fr_0.6fr_0.35fr_0.9fr_0.7fr_80px] items-center border-b border-slate-200 px-5 py-4 last:border-b-0">
+          <div key={resume.id} className="grid grid-cols-[1.25fr_0.6fr_0.35fr_0.9fr_0.7fr_220px] items-center border-b border-slate-200 px-5 py-4 last:border-b-0">
             <span className="font-semibold">{resume.role}</span>
             <span>{resume.company}</span>
             <span className={cn("font-semibold", resume.ats >= 80 ? "text-emerald-700" : resume.ats >= 70 ? "text-amber-700" : "text-red-700")}>{resume.ats}</span>
@@ -3636,13 +3787,126 @@ function HistoryPage({
               ))}
             </Select>
             <span className="text-slate-500">{resume.created}</span>
-            <div className="flex items-center justify-end gap-4 text-slate-700">
-              <Eye size={17} />
-              <Download size={17} />
+            <div className="flex items-center justify-end gap-2 text-slate-700">
+              <button
+                type="button"
+                className="rounded-md p-1.5 transition hover:bg-slate-100 hover:text-slate-950 disabled:cursor-wait disabled:opacity-50"
+                onClick={() => void openHistoryRecord(resume)}
+                disabled={loadingRecordId === resume.id}
+                aria-label={`View ${resume.role}`}
+                title="View request and resume"
+              >
+                {loadingRecordId === resume.id ? <RefreshCw size={17} className="animate-spin" /> : <Eye size={17} />}
+              </button>
+              <button
+                type="button"
+                className="inline-flex items-center gap-1 rounded-md border border-slate-200 px-2 py-1.5 text-sm font-semibold transition hover:bg-slate-50 disabled:cursor-wait disabled:opacity-50"
+                onClick={() => void exportHistoryRecord(resume, "pdf")}
+                disabled={exporting?.id === resume.id}
+                aria-label={`Download ${resume.role} as PDF`}
+                title="Download PDF"
+              >
+                {exporting?.id === resume.id && exporting.format === "pdf" ? <RefreshCw size={15} className="animate-spin" /> : <FileText size={15} />}
+                PDF
+              </button>
+              <button
+                type="button"
+                className="inline-flex items-center gap-1 rounded-md border border-slate-200 px-2 py-1.5 text-sm font-semibold transition hover:bg-slate-50 disabled:cursor-wait disabled:opacity-50"
+                onClick={() => void exportHistoryRecord(resume, "docx")}
+                disabled={exporting?.id === resume.id}
+                aria-label={`Download ${resume.role} as DOCX`}
+                title="Download DOCX"
+              >
+                {exporting?.id === resume.id && exporting.format === "docx" ? <RefreshCw size={15} className="animate-spin" /> : <FileText size={15} />}
+                DOCX
+              </button>
+              <button
+                type="button"
+                className="rounded-md p-1.5 text-red-600 transition hover:bg-red-50 hover:text-red-700"
+                onClick={() => setResumeToDelete(resume)}
+                aria-label={`Delete ${resume.role}`}
+                title="Delete record"
+              >
+                <Trash2 size={17} />
+              </button>
             </div>
           </div>
         ))}
       </Card>
+
+      {viewRecord && (
+        <div className="fixed inset-0 z-50 grid place-items-center bg-slate-950/45 px-4 py-8">
+          <div className="flex max-h-[90vh] w-full max-w-6xl flex-col overflow-hidden rounded-lg border border-slate-200 bg-white shadow-xl">
+            <div className="flex items-start justify-between border-b border-slate-200 px-6 py-4">
+              <div>
+                <h2 className="text-xl font-bold">{viewRecord.targetJobTitle}</h2>
+                <p className="mt-1 text-sm text-slate-500">
+                  {[viewRecord.targetCompany, `ATS ${viewRecord.matchScore}`].filter(Boolean).join(" - ")}
+                </p>
+              </div>
+              <Button variant="secondary" onClick={() => setViewRecord(null)}>
+                Close
+              </Button>
+            </div>
+            <div className="grid min-h-0 flex-1 gap-0 overflow-hidden lg:grid-cols-[0.42fr_0.58fr]">
+              <section className="overflow-auto border-r border-slate-200 p-5">
+                <h3 className="mb-3 text-sm font-bold uppercase tracking-wider text-slate-500">Job request</h3>
+                <div className="mb-4 grid gap-3 text-sm">
+                  <div>
+                    <p className="font-semibold text-slate-500">Target role</p>
+                    <p className="text-slate-900">{viewRecord.targetJobTitle}</p>
+                  </div>
+                  <div>
+                    <p className="font-semibold text-slate-500">Company</p>
+                    <p className="text-slate-900">{viewRecord.targetCompany || "Not provided"}</p>
+                  </div>
+                  <div>
+                    <p className="font-semibold text-slate-500">Created</p>
+                    <p className="text-slate-900">{new Date(viewRecord.createdAt).toLocaleString()}</p>
+                  </div>
+                </div>
+                <pre className="whitespace-pre-wrap rounded-md border border-slate-200 bg-slate-50 p-4 text-sm leading-6 text-slate-800">
+                  {viewRecord.jobDescription || "No job description saved for this record."}
+                </pre>
+              </section>
+              <section className="overflow-auto bg-slate-100 p-5">
+                <h3 className="mb-3 text-sm font-bold uppercase tracking-wider text-slate-500">Resume preview</h3>
+                <ResumeDocumentEditor
+                  resume={viewRecord.resumeJson}
+                  profile={null}
+                  evidence={[]}
+                  requirements={[]}
+                  validationWarnings={[]}
+                  editable={false}
+                  onChange={() => undefined}
+                />
+              </section>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {resumeToDelete && (
+        <div className="fixed inset-0 z-50 grid place-items-center bg-slate-950/40 px-4">
+          <div className="w-full max-w-md rounded-lg border border-slate-200 bg-white p-6 shadow-xl">
+            <div className="mb-4 grid h-10 w-10 place-items-center rounded-full bg-red-50 text-red-600">
+              <Trash2 size={20} />
+            </div>
+            <h2 className="text-xl font-bold">Delete resume record?</h2>
+            <p className="mt-2 text-sm leading-6 text-slate-600">
+              This will remove <span className="font-semibold text-slate-900">{resumeToDelete.role}</span> from your application history.
+            </p>
+            <div className="mt-6 flex justify-end gap-3">
+              <Button variant="secondary" onClick={() => setResumeToDelete(null)} disabled={isDeleting}>
+                Cancel
+              </Button>
+              <Button className="bg-red-600 hover:bg-red-700" onClick={confirmDelete} disabled={isDeleting}>
+                {isDeleting ? "Deleting..." : "Delete"}
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
     </PageFrame>
   );
 }
